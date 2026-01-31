@@ -126,9 +126,6 @@ def process_reviews(
     Returns:
         Summary dict with counts.
     """
-    from datasets import Dataset, load_dataset
-    from huggingface_hub import login
-
     reviews_path = Path(reviews_dir)
     processed_path = Path(processed_dir)
     processed_path.mkdir(parents=True, exist_ok=True)
@@ -180,6 +177,9 @@ def process_reviews(
         if not token:
             print("WARNING: HF_TOKEN not set, cannot push to Hub")
         else:
+            from datasets import Dataset, load_dataset
+            from huggingface_hub import login
+
             login(token=token)
 
             new_ds = Dataset.from_list(dpo_rows)
