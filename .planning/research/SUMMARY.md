@@ -1,419 +1,280 @@
 # Project Research Summary
 
-**Project:** chucklesPRIME
-**Domain:** RLVR training data generation pipeline for phonetic parody titles
+**Project:** chucklesPRIME v1.1 — Fine-tuning & Inference
+**Domain:** LLM fine-tuning (DPO/GRPO) and inference serving
 **Researched:** 2026-01-31
 **Confidence:** HIGH
 
 ## Executive Summary
 
-chucklesPRIME is an RLVR (Reinforcement Learning from Verifiable Rewards) training data generation pipeline that produces phonetically similar parody titles for model training. The recommended approach uses HuggingFace's smolagents library with CodeAgent for multi-step reasoning, pronouncing library for phonetic verification, and generates data in TRL's GRPO-compatible format. This is a data generation pipeline, not a training pipeline, so it requires no GPU resources and operates entirely through remote LLM APIs.
+chucklesPRIME v1.0 successfully generates phonetically-sound parody datasets. Version 1.1 closes the improvement loop by fine-tuning Qwen3-32B on this data and serving it for better parody generation. The recommended approach is to use Unsloth for memory-efficient 4-bit QLoRA training, TRL for DPO/GRPO trainers, and vLLM for inference serving. This stack allows training a 32B parameter model on a single A6000 (48GB) GPU at $0.35/hr on RunPod, with total iteration cost under $3.
 
-The core architecture pattern is clean: external config files (funny words, style preferences, human examples) are loaded once at startup, an LLM adapter layer provides backend flexibility (Cerebras, OpenAI, etc.), smolagents CodeAgent orchestrates multi-step phonetic verification, and outputs are parsed into structured RLVR datasets pushed to HuggingFace Hub. The most critical insight from research is that RLVR trains models to find known-good solutions faster (search compression), not to expand capability, so data quality and verifiability are paramount.
+The core technical challenge is adapting the existing reward functions (phonetic quality, structure preservation, tool usage) to TRL's GRPO interface while avoiding quantization degradation during model merging. Start with DPO training (simpler, well-documented) to validate the pipeline, then add GRPO with custom phonetic rewards for refinement. The biggest risks are: (1) QLoRA adapter merging into 4-bit weights producing degraded models — solved by merging to 16-bit; (2) chat template mismatches causing Qwen3 to ignore fine-tuning — solved by consistent `enable_thinking=False`; (3) GRPO reward functions returning identical scores — solved by continuous reward functions and group size G=8+.
 
-The key risks are: (1) reward hacking via phonetic score gaming, mitigated by composite multi-dimensional rewards instead of single thresholds; (2) diversity collapse in training data, mitigated by difficulty-aware data selection and diversity monitoring; (3) smolagents code parsing failures with non-OpenAI models, mitigated by output sanitization and streaming disabled; (4) verifier imperfection creating false positives/negatives, mitigated by calibrating against human examples from known100.csv.
+The existing chucklesPRIME package requires zero code changes for inference. The OpenAICompatibleModel adapter already works with any OpenAI-compatible endpoint, so pointing settings.json at a vLLM URL completes the loop. Training scripts live in a standalone `training/` directory, importing reward functions from the installed package.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The stack is deliberately minimal because this is an API-only data generation tool, not a training pipeline. No torch, transformers, or GPU dependencies are needed. smolagents v1.24.0 is the official HuggingFace lightweight agent framework (successor to transformers.agents), providing first-class CodeAgent support and swappable model backends. The datasets library handles HuggingFace Hub upload with native Parquet serialization and Dataset Viewer support.
+**Unsloth + TRL + vLLM** is the battle-tested stack for QLoRA fine-tuning and serving at this scale.
 
 **Core technologies:**
-- **smolagents >= 1.24.0**: Agent orchestration with CodeAgent for multi-step reasoning traces
-- **datasets >= 4.5.0**: Dataset creation and push_to_hub for HuggingFace Hub upload
-- **pronouncing >= 0.2.0**: CMU Pronouncing Dictionary interface for phonetic analysis
-- **litellm >= 1.55.0**: Multi-provider LLM routing for 100+ backends including Cerebras
-- **trl >= 0.27.0**: Format reference only (defines GRPOTrainer dataset contract)
-- **Python >= 3.10**: For match/case and modern typing support
+- **Unsloth** (>= 2026.1.4): QLoRA training accelerator — 2-2.7x faster than standard PEFT, 70% less VRAM via hand-optimized Triton kernels. Only viable way to train 32B QLoRA on single A6000 (48GB) with headroom for GRPO's multi-completion generation.
+- **TRL** (>= 0.27.1): DPOTrainer and GRPOTrainer — Official HuggingFace trainers with Unsloth integration. DPOTrainer supports preference pairs; GRPOTrainer supports custom reward functions with configurable weights and vLLM-accelerated generation.
+- **vLLM** (>= 0.15.0): OpenAI-compatible inference server — De facto standard for LLM serving. PagedAttention for efficient KV cache, native Qwen3 support, AWQ/GPTQ quantization for fitting 32B on 24GB GPUs. Zero code changes needed — existing OpenAICompatibleModel adapter works as-is.
+- **bitsandbytes** (>= 0.49.1): 4-bit NF4 quantization for QLoRA training — Required for fitting 32B models on single-GPU.
+- **RunPod**: Cloud GPU provider — Pre-built vLLM templates, network volume storage, competitive pricing. A6000 (48GB) at $0.35/hr for training, RTX 4090 (24GB) at ~$0.44/hr for AWQ-quantized inference.
 
-**Critical version note:** Pin smolagents to exact version (experimental library, breaks between versions). Use smolagents built-in model classes (InferenceClientModel, LiteLLMModel) instead of custom adapters. Cerebras is already a supported provider via InferenceClientModel with provider="cerebras" or LiteLLMModel with model_id="cerebras/llama-3.3-70b".
-
-### RLVR Dataset Format
-
-GRPOTrainer expects prompt-only datasets with conversational format. The dataset has one required column (prompt) and auxiliary columns passed to reward functions during training.
-
-**Required schema:**
-```python
-{
-    "prompt": [  # Conversational format (list of message dicts)
-        {"role": "system", "content": "You create phonetic parodies..."},
-        {"role": "user", "content": "Create a parody of 'The Matrix'"}
-    ],
-    # Auxiliary columns for reward functions:
-    "original_title": "The Matrix",
-    "parody_title": "The Grape Fatsby",  # Ground truth example
-    "reasoning_trace": "[{...}]",  # JSON string of agent steps
-    "phonetic_distance": 0.15,
-    "generation_model": "Qwen/Qwen2.5-72B-Instruct"
-}
-```
-
-**Critical insight:** GRPO training generates completions online; the dataset contains prompts only, not model responses. Reward functions receive auxiliary columns as kwargs. Must set `remove_unused_columns=False` in GRPOConfig to preserve metadata.
+**Critical stack pattern:** Let `pip install unsloth` resolve torch/transformers/peft versions. Unsloth has specific version coupling. Install Unsloth FIRST, then TRL, then project dependencies.
 
 ### Expected Features
 
 **Must have (table stakes):**
-- **Deterministic reproducibility**: Seed management, environment pinning, input versioning with hashes
-- **VeRL-compatible output format**: Parquet schema with prompt, ability, reward_model, extra_info fields
-- **Structured reasoning trace capture**: Full multi-step agent traces with tool calls, not just final output
-- **Deduplication**: Input, output, and cross-batch deduplication with near-duplicate detection
-- **Quality-gated auto-labeling**: Threshold-based filtering with quality labels and label sources
-- **Batch processing with resume**: Checkpoint after each title, resume from checkpoint on crash
-- **Logging and audit trail**: Run ID, config checksums, per-title scores, summary statistics
+- **4-bit QLoRA model loading** — 32B model requires ~64GB at FP16; QLoRA brings to ~26-30GB on A6000.
+- **TRL DPOTrainer integration** — Standard DPO implementation, fully compatible with Unsloth.
+- **Chat template preservation** — Qwen3 uses `<|im_start|>/<|im_end|>` markers. Mismatch is #1 cause of "trains but doesn't work."
+- **LoRA adapter save to Hub** — Version control for trained adapters (~100-300MB).
+- **Merged 16-bit model save** — vLLM requires merged model for best performance.
+- **vLLM OpenAI-compatible server** — Standard `/v1/chat/completions` endpoint.
+- **Existing CLI compatibility** — OpenAICompatibleModel already supports configurable base_url.
 
-**Should have (competitive):**
-- **Difficulty-aware data selection**: Track pass@k per title, prioritize medium-difficulty examples (30-70% success rate)
-- **Composite verifiable reward function**: Decompose into phonetic_validity, phonetic_quality, structural_fidelity, tool_usage_completeness, reasoning_quality
-- **Multi-generation with best-of-N selection**: Generate N candidates per title, select top-2, retain rejected for DPO
-- **Provenance-rich records**: Full metadata for reproducibility (run_id, model, config_hashes, timestamps)
-- **Negative example generation**: Ablated generation without tools, perturbations, low-threshold captures for DPO pairs
-- **Diversity enforcement**: Track funny_words usage categories, measure output diversity with Self-BLEU
+**Should have (competitive advantage):**
+- **Composite GRPO reward functions** — Adapt existing phonetic/structure/tool rewards to TRL interface. This is unique — no off-the-shelf reward for phonetic parody quality.
+- **Full improvement loop automation** — Script the cycle: generate -> train -> serve -> generate better.
+- **vLLM LoRA hot-swapping** — Serve multiple adapters on one base model for A/B comparison.
+- **Phased training (DPO then GRPO)** — DPO establishes style baseline; GRPO refines phonetic discipline. Research shows DPO excels at "alignment/style" while GRPO excels at "reasoning/structured tasks."
+- **Qwen3 thinking mode control** — Enable `/think` during GRPO training for reasoning; disable `/no_think` for fast inference.
 
 **Defer (v2+):**
-- Interactive labeling (auto-labeling first, interactive for edge cases later)
-- Real-time Hub pushing (explicit manual step instead)
-- Custom phonetic embeddings (CMU dictionary + custom_phones sufficient)
-- Multi-model comparison (focus on one model done well)
+- **Online GRPO with vLLM generation** — Requires dedicated inference GPU, complex memory management.
+- **Full fine-tuning (not LoRA)** — 10-30x more expensive, requires multi-GPU.
+- **Multi-iteration automated pipeline** — Need manual quality validation first.
+- **Production autoscaling** — RunPod serverless handles basic scaling; elaborate autoscaling is yak-shaving.
 
 ### Architecture Approach
 
-The system has six components with clean boundaries: (1) Config Layer loads external files (funny_words.json, preferences.json, human_examples.csv) at startup; (2) LLM Adapter Layer uses smolagents built-in model classes (no custom adapter needed); (3) Agent Orchestration uses smolagents CodeAgent with word_phone_tool; (4) Prompt Builder assembles context from title, config, examples, suggestions; (5) Output Parser extracts structured data and computes quality signals; (6) Pipeline Orchestrator orchestrates CSV in -> process -> dataset out.
+Training scripts are standalone in `training/` directory, NOT part of the installable package. Heavy GPU dependencies (Unsloth, TRL) stay out of the main package. The scripts install `chuckles_prime` from GitHub on RunPod to import reward functions.
 
 **Major components:**
-1. **Config loading** (`config.py`) — Load external files, return frozen AppConfig dataclass
-2. **LLM adapter** (`llm.py`) — Create smolagents model from backend string via factory function
-3. **Prompt builder** (`prompt.py`) — Assemble prompts from title + config + examples + suggestions
-4. **Agent execution** (`agent.py`) — Initialize CodeAgent, run, return raw output with traces
-5. **Output parser** (`parser.py`) — Extract structured data from raw agent output (thinking, tool calls, attempts)
-6. **Dataset converter** (`dataset.py`) — Convert to TRL formats (GRPO prompt-only, DPO preference, SFT), push to Hub
-7. **Pipeline orchestrator** (`pipeline.py`) — Main loop: CSV -> agent -> parse -> dataset
+1. **DPO training script** (`train_dpo.py`) — Loads dataset from Hub, trains QLoRA with Unsloth + TRL DPOTrainer, saves adapter. Zero custom code beyond config.
+2. **GRPO training script** (`train_grpo.py`) — Loads dataset from Hub, wraps reward functions for TRL interface, trains with GRPOTrainer. Reward wrappers live in this script as glue code.
+3. **Merge and push script** (`merge_and_push.py`) — Loads adapter, merges to 16-bit using Unsloth's `save_method="merged_16bit"`, pushes to Hub. Critical: must merge to 16-bit, not 4-bit.
+4. **vLLM inference server** — RunPod pod or serverless worker serving merged model with OpenAI-compatible API.
+5. **Reward function wrappers** — Bridge TRL's `(completions, **kwargs) -> list[float]` interface to existing reward functions. Extract text from conversational format, access `original_title` from dataset columns, compute scores.
 
-**Data flow:** Input CSV + external configs -> load_config() -> create_model() -> for each title: pre-compute suggestions -> build_prompt() -> run_agent() -> parse_output() -> convert_to_RLVR_format() -> push_to_hub().
+**Data flow:** Local CLI pushes datasets to Hub -> RunPod training pod loads datasets -> trains adapters -> merges and pushes model to Hub -> vLLM pod serves model -> Local CLI points to vLLM endpoint -> generates better parodies -> loop closes.
 
-**Key architectural decisions:**
-- Use smolagents built-in InferenceClientModel or LiteLLMModel (no custom CerebrasModel)
-- Config objects via factory function (no DI framework, env vars only for secrets)
-- JSONL as primary output format (supports nested structures, CSV only for viewing)
-- Tools stay on HuggingFace Hub (load via load_tool(), keep local copies for testing)
-- Human examples: random sampling for few-shot prompts, exclude target title from examples, include known_good_parody in dataset if available
+**Integration point:** RunPod setup script runs `pip install "git+https://github.com/patruff/chucklesPRIME.git"` to make reward functions importable. Single source of truth for reward logic.
 
 ### Critical Pitfalls
 
-1. **Reward hacking via phonetic score gaming** — Model learns to exploit scoring function rather than produce genuinely funny parodies. Signs: same replacement words repeated, high phonetic scores but low humor. Prevention: composite rewards (phonetic + diversity penalty), track replacement word entropy, use RLVRR-style decomposed rewards. Address in: Architecture (reward function design).
+1. **Merging QLoRA into 4-bit base produces degraded model** — Always use `save_method="merged_16bit"` which downloads FP16 base and merges LoRA into clean weights. Never use `merged_4bit`. Test merged model output vs adapter-loaded output before pushing to Hub.
 
-2. **Diversity collapse in training data** — GRPO concentrates on narrow high-reward outputs, model loses creativity. Signs: Pass@1 improves but Pass@k degrades, entropy decreases. Prevention: forward-KL or JS-divergence instead of reverse-KL, difficulty-based curriculum, monitor Pass@k alongside Pass@1. Address in: Data Generation (diversity monitoring), Training (objective choice).
+2. **Unsloth/TRL/Transformers version mismatch causes silent failures** — Unsloth monkey-patches TRL/Transformers internals. Version skew causes TypeError or wrong loss computation. Always install Unsloth FIRST, let it resolve dependencies. Pin versions: `unsloth>=2026.1.4 trl>=0.27.1 transformers>=5.0.0`.
 
-3. **smolagents code parsing failures** — CodeAgent expects specific markdown format, models like Qwen3 via Cerebras produce unparsable output causing syntax error loops. Signs: repeated "Error in code parsing", agent reaches max_steps without output. Prevention: set stream_outputs=False (smolagents issue #1872), output sanitization in model wrapper, max_steps=10-15 with graceful fallback. Address in: Architecture (model wrapper design).
+3. **GRPO reward functions with wrong signature crash training** — TRL passes completions as `list[list[dict]]` in conversational format, not strings. Must extract `completion[0]["content"]`. Must accept `**kwargs` for dataset columns. Must return `list[float]` with length matching batch. Higher value = better (GRPO maximizes).
 
-4. **Verifier imperfection (false positives/negatives)** — Phonetic scoring systematically wrong in both directions. Signs: human reviewers disagree >20%, known-funny parodies score below threshold. Prevention: audit verifier against known100.csv examples, track false positive/negative rates, apply noise-corrected RLVR, expand custom_phones dictionary. Address in: Data Generation (verifier calibration).
+4. **RunPod container storage loss on pod stop** — Checkpoints on container disk are lost on stop/reboot. Always attach network volume, save to `/workspace/`. Push to Hub immediately after training completes.
 
-5. **RLVR trains speed, not new capability** — RLVR performs search compression (teaches model to find known-good answers faster), doesn't expand capability frontier. Signs: trained model identical to base model's best-of-N, no improvement on consistent-fail titles. Prevention: establish Pass@k baseline before training, focus on sweet spot difficulty (30-70% success rate), use SFT first for new capabilities. Address in: Data Generation (difficulty filtering).
+5. **Qwen3 chat template mismatch during fine-tuning** — If training data template doesn't match model's expected format, model ignores fine-tuning (1% style adherence). Use `tokenizer.apply_chat_template(enable_thinking=False)` consistently. Do NOT include `<think>` blocks unless explicitly training thinking mode.
 
-**Additional critical pitfalls:**
-- **CMU dictionary OOV words** — Many creative words not in CMU dict (slang, proper nouns, neologisms). Prevention: implement g2p fallback, expand custom_phones (currently only 4 entries), pre-compute pronunciations for funny_words list.
-- **Phonetic scoring inconsistency** — word_phone.py and parody_suggestions.py have different similarity algorithms. Prevention: extract shared phonetic logic into single module, write unit tests.
-- **Binary reward granularity mismatch** — Binary 0/1 rewards destroy gradient information (0.61 and 0.99 both get reward=1). Prevention: use continuous scores, decompose into multiple components.
+6. **GRPO training stuck with zero reward std** — If all completions get same reward, `frac_reward_zero_std` approaches 1.0, no learning signal. Use continuous (not binary) reward functions, group size G=8+, and `scale_rewards="batch"`. Monitor `frac_reward_zero_std` — if > 0.5, fix reward functions.
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure:
+Based on research, suggested phase structure prioritizes validation before complexity:
 
-### Phase 1: Foundation (Config + Parser + Prompts)
-**Rationale:** These modules have zero external dependencies and can be tested with fixture data from existing parodies2026/ output. Parser is the most fragile component (regex-based) and benefits from early testing.
+### Phase 1: Environment & Foundation
+**Rationale:** Must establish working training environment before any GPU work. RunPod setup, dependency pinning, and storage configuration prevent wasted GPU hours. GRPO reward wrappers must be tested offline before burning GPU credits on broken functions.
 
-**Delivers:** AppConfig dataclass with load_config() factory, GenerationRecord dataclass with extraction functions, prompt templates ported from system_prompt.py
+**Delivers:**
+- RunPod setup script (`setup_runpod.sh`) with pinned versions
+- Network volume configuration and validation
+- GRPO reward function wrappers with unit tests
+- Pre-flight validation script (single training step test)
 
-**Implements:** Config Layer, Output Parser (pure functions, no I/O), Prompt templates
+**Addresses:**
+- Version mismatch pitfall (pin Unsloth/TRL/Transformers)
+- Container storage loss (network volume setup)
+- GRPO reward signature errors (unit tests catch offline)
 
-**Avoids:** Schema drift (define schema as dataclass early), CSV output fragility (JSONL primary format)
+**Avoids:**
+- Losing checkpoints to container disk
+- Silent version compatibility bugs
+- Discovering reward function bugs after hours of training
 
-**Research needed:** None (standard patterns)
+**Research flags:** Standard patterns — RunPod and Python environment setup are well-documented. No deep research needed.
 
-### Phase 2: LLM + Agent Integration
-**Rationale:** Once config and parsing work, wire up the LLM. Critical validation is that LiteLLMModel/InferenceClientModel works as drop-in replacement for CerebrasModel.
+### Phase 2: DPO Training Pipeline
+**Rationale:** DPO is simpler than GRPO (no custom rewards, just preference pairs). Validates the full Unsloth + TRL + RunPod pipeline with fewer moving parts. Dataset format already correct from v1.0. Success here proves training, merging, and Hub push all work before adding GRPO complexity.
 
-**Delivers:** create_model() factory for smolagents backends, PromptBuilder class with example selection, run_agent() function using CodeAgent
+**Delivers:**
+- DPO training script (`train_dpo.py`)
+- Training run on small dataset subset (validation)
+- Merged 16-bit model pushed to Hub
+- Quality validation script (before/after comparison)
 
-**Uses:** smolagents>=1.24.0 (pinned), litellm>=1.55.0, openai>=1.50.0
+**Uses:**
+- Unsloth FastModel with 4-bit QLoRA
+- TRL DPOTrainer with existing Hub dataset
+- `save_method="merged_16bit"` for merge
 
-**Avoids:** smolagents code parsing failures (set stream_outputs=False, max_steps=10-15), tool import authorization errors (correct authorized_imports list), Hub tool loading as network dependency (vendor tools locally)
+**Implements:**
+- Training script component
+- Merge and push component (for DPO first)
 
-**Research needed:** Minimal (validate LiteLLMModel with Cerebras, test output sanitization patterns)
+**Avoids:**
+- QLoRA 4-bit merge degradation (use merged_16bit)
+- Chat template mismatch (apply Qwen3 template with enable_thinking=False)
 
-### Phase 3: Dataset Conversion + Hub Push
-**Rationale:** Output end depends on having real generation records to convert. Build after generation pipeline works.
+**Research flags:** Standard patterns — DPO with Unsloth is well-documented in TRL/Unsloth examples. Minimal research needed.
 
-**Delivers:** Format converters (GRPO prompt-only, DPO preference, SFT), Hub push function using datasets library, format validation tests
+### Phase 3: vLLM Inference Serving
+**Rationale:** With a merged model from Phase 2, validate serving and end-to-end integration before adding GRPO. Proves the existing CLI works with vLLM endpoint (zero code changes claim). Completes the loop for DPO-only pipeline first.
 
-**Implements:** Dataset converter component, VeRL parquet schema mapping
+**Delivers:**
+- vLLM server setup (RunPod pod or serverless)
+- settings.json template for vLLM endpoint
+- Inference validation (compare to base model)
+- End-to-end test (generate -> train DPO -> serve -> generate)
 
-**Avoids:** GRPO dataset format mismatch (TRL-compatible from start), missing config_name in HF YAML (use push_to_hub())
+**Uses:**
+- vLLM serve with merged model from Phase 2
+- AWQ/GPTQ quantization for 24GB GPUs (optional)
+- OpenAI-compatible API
 
-**Research needed:** None (TRL format well-documented)
+**Implements:**
+- vLLM inference server component
+- Integration with existing OpenAICompatibleModel
 
-### Phase 4: Pipeline + Batch Processing
-**Rationale:** Pure glue code, trivial once all components work independently. This is where batch processing, checkpointing, resume, and deduplication logic lives.
+**Avoids:**
+- Serving unmerged LoRA (merge first)
+- max_model_len=40960 OOM (set to 8192 for parodies)
 
-**Delivers:** pipeline.py orchestration loop, CLI with argparse, end-to-end test (CSV -> generation -> RLVR dataset -> Hub push), pyproject.toml packaging
+**Research flags:** Standard patterns — vLLM serving is well-documented. RunPod has vLLM worker templates.
 
-**Implements:** Pipeline Orchestrator, Batch processing with resume
+### Phase 4: GRPO Training Pipeline
+**Rationale:** With DPO pipeline validated and vLLM serving working, add GRPO for phonetic reward refinement. Reward wrappers from Phase 1 are pre-tested. This phase is higher risk due to custom rewards but builds on proven foundation.
 
-**Avoids:** No deduplication (implement unique IDs, dedup before training), rate limiting issues (token-aware limiting, backoff, caching), batch processing fragility (checkpoint after each title)
+**Delivers:**
+- GRPO training script (`train_grpo.py`)
+- Integrated reward function wrappers (phonetic, structure, format)
+- Training run with reward monitoring
+- Phased training option (load DPO adapter, continue with GRPO)
 
-**Research needed:** None (orchestration patterns)
+**Uses:**
+- TRL GRPOTrainer with custom reward functions
+- Reward function wrappers from Phase 1
+- Existing GRPO dataset on Hub
 
-### Phase 5: Quality + Calibration
-**Rationale:** Makes data actually useful for training. Composite rewards, human example calibration, difficulty tracking.
+**Implements:**
+- GRPO training script component
+- Composite reward function integration
 
-**Delivers:** Composite reward function implementation, human example scoring against phonetic metrics, calibrated auto-labeling thresholds, difficulty tracking (pass@k per title)
+**Avoids:**
+- GRPO reward signature errors (pre-tested wrappers)
+- Zero-std stuck training (continuous rewards, G=8, monitor frac_reward_zero_std)
 
-**Addresses:** Difficulty-aware data selection, composite verifiable rewards, provenance-rich records
+**Research flags:** Needs research — Custom reward functions for phonetic similarity are novel. May need iteration on reward weighting and group size. Monitor training closely in first runs.
 
-**Avoids:** Reward hacking (composite rewards), verifier imperfection (calibrate against known100.csv), training data contamination (exclude target from examples)
+### Phase 5: Automation & Iteration
+**Rationale:** With all components working independently, automate the full loop and add convenience features. This phase is optional for v1.1 but sets up productive iteration.
 
-**Research needed:** Deep (reward function tuning, threshold calibration against human judgments)
+**Delivers:**
+- End-to-end automation script (generate -> train -> serve)
+- vLLM LoRA hot-swapping (A/B test adapters)
+- Training metrics dashboard (W&B or TensorBoard)
+- Qwen3 thinking mode toggling
 
-### Phase 6: Diversity + Optimization
-**Rationale:** Makes data notably better. Multi-generation, best-of-N, diversity metrics, negative examples for DPO.
+**Uses:**
+- All components from Phases 1-4
+- vLLM LoRA serving features
+- Monitoring tools
 
-**Delivers:** Multi-generation with best-of-N selection, diversity metrics (Self-BLEU, entropy tracking), negative example generation (ablated, perturbation, low-threshold)
+**Implements:**
+- Full improvement loop automation
+- Differentiator features from FEATURES.md
 
-**Addresses:** Negative example generation, diversity enforcement
-
-**Avoids:** Diversity collapse (forward-KL divergence, curriculum learning)
-
-**Research needed:** Moderate (diversity metrics implementation, DPO pair construction strategies)
+**Research flags:** Standard patterns — Orchestration and monitoring are well-understood. Optional for MVP.
 
 ### Phase Ordering Rationale
 
-- **Phase 1 first** because config, parser, and prompts have no network dependencies and can be tested immediately with existing output fixtures
-- **Phase 2 next** to validate the LLM adapter replacement (biggest architectural risk: will LiteLLMModel work as claimed?)
-- **Phase 3 after** because dataset conversion needs real generation records to test against
-- **Phase 4 integration** once all components proven to work independently
-- **Phase 5 quality tuning** once basic pipeline generates data (need data to calibrate against)
-- **Phase 6 optimization** is polish on top of working system
+- **Environment first:** Prevents wasted GPU hours from avoidable setup errors. Fast feedback loop for validation.
+- **DPO before GRPO:** Simpler training method validates pipeline before custom rewards. DPO dataset already correct.
+- **Serving after DPO:** Can complete DPO loop (train -> serve -> generate) before GRPO complexity. Proves zero-code-change claim early.
+- **GRPO after foundation:** Builds on validated components. Reward functions pre-tested offline. Phased training (DPO -> GRPO) becomes easy.
+- **Automation last:** All components must work independently before automating. Optional for MVP.
 
-This ordering front-loads the highest risks (smolagents integration, LLM adapter replacement) and defers optimization until the pipeline proves viable.
+**Dependency chain:** Phase 1 (setup) -> Phase 2 (DPO training) -> Phase 3 (serving) closes one loop. Phase 4 (GRPO) adds to loop. Phase 5 (automation) optimizes loop.
+
+**Avoids compounding risk:** Each phase delivers value independently. Can stop after Phase 3 with working DPO pipeline. GRPO is additive, not blocking.
 
 ### Research Flags
 
-Phases likely needing deeper research during planning:
-- **Phase 5 (Quality + Calibration):** Complex reward function design, threshold calibration methodology needs experimentation
-- **Phase 6 (Diversity + Optimization):** Diversity metrics selection, best-of-N selection strategies, DPO pair construction
+**Phases needing deeper research during planning:**
+- **Phase 4 (GRPO):** Custom reward function design for phonetic similarity is novel. Reward weighting (phonetic vs structure vs format) needs experimentation. Group size and loss type (GRPO vs GSPO) may need tuning.
 
-Phases with standard patterns (skip research-phase):
-- **Phase 1 (Foundation):** Config loading, dataclass design, regex parsing are well-understood
-- **Phase 2 (LLM + Agent):** smolagents API is documented, model adapter pattern is standard
-- **Phase 3 (Dataset + Hub):** TRL format is specified, datasets library push_to_hub is canonical
-- **Phase 4 (Pipeline + Batch):** Orchestration, checkpointing, dedup are solved problems
+**Phases with standard patterns (skip research-phase):**
+- **Phase 1 (Environment):** RunPod setup, Python dependencies, unit testing are well-documented.
+- **Phase 2 (DPO):** DPO with Unsloth + TRL is extensively documented in official guides and examples.
+- **Phase 3 (vLLM):** Inference serving with vLLM has official docs and RunPod templates.
+- **Phase 5 (Automation):** Orchestration patterns are standard; implementation is straightforward scripting.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | **HIGH** | smolagents v1.24.0 is official HF library, actively maintained. TRL format is documented. pronouncing is stable. All recommendations from official sources. |
-| Features | **HIGH** | RLVR literature (DRIVE, DEPO, RLVRR papers) provides clear guidance on data quality requirements. VeRL parquet schema is de facto standard. |
-| Architecture | **HIGH** | smolagents built-in model classes eliminate need for custom adapter. Config injection via factory function is proven pattern. Component boundaries are clean. |
-| Pitfalls | **HIGH** | Pitfalls drawn from smolagents GitHub issues, RLVR research papers, analysis of existing parodies2026/ codebase. All have documented prevention strategies. |
+| Stack | HIGH | All versions verified via PyPI (Jan 2026). Unsloth/TRL/vLLM integration confirmed in official docs. RunPod pricing verified. |
+| Features | MEDIUM-HIGH | DPO features are standard and well-documented (HIGH). GRPO custom reward patterns verified in TRL docs, but phonetic reward quality is unproven (MEDIUM). vLLM integration with existing code verified from source analysis (HIGH). |
+| Architecture | HIGH | Integration pattern (pip install from GitHub for rewards) verified from existing pyproject.toml and is standard practice. Data flow and component boundaries are straightforward. Reward wrapper pattern confirmed from TRL docs. |
+| Pitfalls | HIGH | All critical pitfalls verified from multiple GitHub issues and official docs. QLoRA merge degradation, version mismatch, GRPO reward signatures, RunPod storage loss, Qwen3 chat template — all have documented cases. |
 
 **Overall confidence:** HIGH
 
+The stack is mature and well-integrated (Unsloth + TRL is the recommended pairing). The architecture leverages existing project structure cleanly. The pitfalls are known and have documented solutions. The main uncertainty is GRPO reward function effectiveness for phonetic parody quality, which is domain-specific and requires experimentation.
+
 ### Gaps to Address
 
-- **Phonetic scoring algorithm selection:** word_phone.py and parody_suggestions.py use different similarity algorithms. Need to reconcile and choose canonical version. Validate against all 100 known examples to establish empirical threshold.
+**GRPO reward function effectiveness:** The three reward functions (phonetic quality, structure preservation, tool usage) are proven for scoring existing parodies but untested as training signals. May need iteration on:
+- Reward scaling and weighting
+- Continuous vs binary rewards
+- Group size (G) for diversity
+- Whether to use GRPO, GSPO, or CISPO loss variant
 
-- **smolagents streaming behavior:** Research indicates stream_outputs=False required for CodeAgent (issue #1872), but this needs validation with Cerebras backend specifically.
+**Mitigation:** Start with DPO (Phase 2) to establish baseline quality. Add GRPO (Phase 4) as refinement. Monitor `frac_reward_zero_std` and reward curves closely in first GRPO runs. Iterate on reward design if stuck.
 
-- **g2p fallback implementation:** CMU dictionary OOV handling is critical but no specific library recommendation emerged. Need to evaluate g2p_en vs other options during Phase 5.
+**Qwen3 thinking mode strategy:** Research shows thinking mode can improve GRPO reasoning quality but adds latency and cost. Unclear if parody generation benefits from thinking.
 
-- **VeRL vs TRL format compatibility:** Research found both VeRL parquet schema and TRL GRPO format. Need to validate these are compatible or choose one definitively during Phase 3.
+**Mitigation:** Train with `enable_thinking=False` (standard mode) initially. Experiment with thinking mode in Phase 5 if non-thinking results are weak.
 
-- **Human example optimal count:** Research suggests 10-20 examples in few-shot prompt, but optimal number for this specific task needs empirical validation.
+**vLLM quantization quality tradeoff:** AWQ 4-bit on RTX 4090 (24GB) is cheaper but quality loss is unknown for parody generation.
 
-## Recommended Stack
-
-| Library | Version | Role | Rationale |
-|---------|---------|------|-----------|
-| smolagents | >=1.24.0 | Agent orchestration | HuggingFace official lightweight agent framework, CodeAgent support, swappable backends |
-| datasets | >=4.5.0 | Dataset creation & upload | Native push_to_hub, Parquet serialization, Dataset Viewer support |
-| huggingface-hub | >=1.3.5 | Hub authentication & API | Handles login, token management, push/pull |
-| trl | >=0.27.0 | RLVR format reference | Defines GRPOTrainer dataset contract (format spec only, not run) |
-| pronouncing | >=0.2.0 | Phonetic analysis | CMU Pronouncing Dictionary interface, provides phones_for_word(), rhymes(), stresses() |
-| litellm | >=1.55.0 | Multi-provider LLM routing | 100+ providers including Cerebras, OpenAI, Anthropic |
-| openai | >=1.50.0 | OpenAI-compatible API client | For OpenAI or OpenAI-compatible endpoints (Cerebras) |
-| python-dotenv | >=1.0.0 | Environment variable management | Load .env files for API keys |
-
-**Python version:** >=3.10 (for match/case and modern typing)
-
-**NOT needed:** torch, transformers, accelerate, vllm (this is data generation, not training)
-
-## Architecture
-
-### Component Structure
-
-```
-Config Layer (external files)
-    funny_words.json, preferences.json, human_examples.csv
-    -> load_config() -> AppConfig (frozen dataclass)
-
-LLM Adapter Layer
-    create_model(backend_string) -> smolagents Model
-    (InferenceClientModel or LiteLLMModel, no custom adapter)
-
-Agent Orchestration
-    CodeAgent(model, tools=[word_phone_tool], max_steps=10-15)
-    -> multi-step reasoning with tool calls
-
-Prompt Builder
-    PromptBuilder.build(title, suggestions, num_examples=15)
-    -> fully-constructed prompt with examples + preferences + suggestions
-
-Output Parser
-    OutputParser.parse(raw_output) -> GenerationRecord (dataclass)
-    -> extracts thinking, tool calls, attempts, final parody
-
-Dataset Converter
-    convert_to_grpo_format(records) -> List[dict]
-    -> TRL-compatible prompt-only format + metadata
-
-Pipeline Orchestrator
-    CSV -> load_config -> for each title: suggest -> prompt -> agent -> parse -> dataset -> Hub
-```
-
-### Data Flow
-
-```
-input.csv (titles)
-    + funny_words.json
-    + preferences.json
-    + human_examples.csv
-    |
-    v
-load_config() -> AppConfig
-    |
-    v
-create_model(config.llm_backend) -> smolagents Model
-    |
-    v
-FOR EACH TITLE:
-    |
-    +-> pre_compute_suggestions(title, funny_words) -> {word: [suggestions]}
-    |
-    +-> PromptBuilder.build(title, suggestions, examples) -> prompt
-    |
-    +-> CodeAgent.run(prompt) -> raw_output
-    |
-    +-> OutputParser.parse(raw_output) -> GenerationRecord
-    |
-    v
-List[GenerationRecord]
-    |
-    v
-convert_to_grpo_format() -> List[dict]
-    |
-    v
-Dataset.from_list() -> push_to_hub()
-```
-
-## Key Features for v1
-
-### Table Stakes (non-negotiable)
-
-1. **Deterministic reproducibility** — Seed management, environment pinning, input versioning
-2. **VeRL-compatible output format** — Parquet schema with prompt, ability, reward_model, extra_info
-3. **Structured reasoning trace capture** — Full multi-step agent traces with tool calls
-4. **Deduplication** — Input, output, cross-batch with near-duplicate detection
-5. **Quality-gated auto-labeling** — Threshold-based filtering with quality labels
-6. **Batch processing with resume** — Checkpoint after each title, resume from checkpoint
-7. **Logging and audit trail** — Run ID, config checksums, per-title scores, summary stats
-
-### Differentiators (competitive advantage)
-
-1. **Difficulty-aware data selection** — Track pass@k per title, prioritize medium-difficulty (30-70% success)
-2. **Composite verifiable reward** — Decompose into phonetic_validity, phonetic_quality, structural_fidelity, tool_usage, reasoning_quality
-3. **Multi-generation with best-of-N** — Generate N candidates, select top-2, retain rejected for DPO
-4. **Provenance-rich records** — Full metadata for reproducibility (run_id, model, config_hashes, timestamps)
-5. **Negative example generation** — Ablated, perturbation, low-threshold for DPO pairs
-6. **Diversity enforcement** — Track usage categories, measure with Self-BLEU
-
-## Critical Pitfalls
-
-### Top 5 Things That Will Bite Us
-
-1. **Reward hacking via phonetic gaming** — Model exploits scoring instead of being genuinely funny. Prevention: composite rewards, diversity penalties, entropy tracking.
-
-2. **Diversity collapse in training data** — GRPO concentrates on narrow outputs, loses creativity. Prevention: forward-KL divergence, difficulty curriculum, Pass@k monitoring.
-
-3. **smolagents code parsing failures** — Non-OpenAI models produce unparsable output. Prevention: stream_outputs=False, output sanitization, max_steps=10-15.
-
-4. **Verifier false positives/negatives** — Phonetic scoring systematically wrong. Prevention: calibrate against known100.csv, track false rates, expand custom_phones.
-
-5. **RLVR trains speed not capability** — Only compresses search, doesn't expand what model can do. Prevention: Pass@k baseline, sweet spot difficulty (30-70%), SFT first for new skills.
-
-## Build Order
-
-### Recommended Sequence
-
-**Phase 1: Foundation** (no LLM calls, no network)
-- config.py + AppConfig + load_config()
-- parser.py + GenerationRecord + extraction functions
-- prompts/system.py + prompts/templates.py
-- Tests with fixture data from parodies2026/
-
-**Phase 2: LLM + Agent** (requires API key)
-- llm.py + create_model() factory
-- prompt.py + PromptBuilder
-- agent.py + run_agent()
-- Smoke test: single title generation
-
-**Phase 3: Dataset + Hub** (requires HF token)
-- dataset.py + format converters (GRPO, DPO, SFT)
-- Hub push using datasets library
-- Integration test: push small test dataset
-
-**Phase 4: Pipeline + CLI** (integration)
-- pipeline.py + orchestration loop
-- cli.py + argparse
-- End-to-end test: CSV -> generation -> RLVR dataset -> Hub
-- pyproject.toml + packaging
-
-**Phase 5: Quality + Calibration**
-- Composite reward function
-- Human example scoring and threshold calibration
-- Difficulty tracking (pass@k)
-
-**Phase 6: Diversity + Optimization**
-- Multi-generation with best-of-N
-- Diversity metrics and enforcement
-- Negative example generation for DPO
+**Mitigation:** Serve FP8 or FP16 on A6000 (48GB) for quality; only quantize to AWQ if cost becomes prohibitive. Test before committing.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- [smolagents Documentation](https://huggingface.co/docs/smolagents/index) — official HF docs, v1.24.0
-- [smolagents Models Reference](https://huggingface.co/docs/smolagents/en/reference/models) — built-in model classes
-- [smolagents Tools Tutorial](https://huggingface.co/docs/smolagents/en/tutorials/tools) — @tool decorator, Tool subclass
-- [TRL Dataset Formats](https://huggingface.co/docs/trl/main/en/dataset_formats) — prompt-only, preference, SFT
-- [TRL GRPOTrainer](https://huggingface.co/docs/trl/main/en/grpo_trainer) — RLVR via GRPO
-- [datasets Upload Guide](https://huggingface.co/docs/datasets/en/upload_dataset) — push_to_hub patterns
-- [pronouncing Library](https://pronouncing.readthedocs.io/en/latest/) — CMU dict interface
+- [TRL GRPOTrainer Documentation](https://huggingface.co/docs/trl/main/en/grpo_trainer) — Reward function interface, dataset format
+- [TRL DPOTrainer Documentation](https://huggingface.co/docs/trl/en/dpo_trainer) — DPO training with PEFT/QLoRA
+- [Unsloth Qwen3 Documentation](https://unsloth.ai/docs/models/qwen3-how-to-run-and-fine-tune) — Model loading, VRAM requirements
+- [Unsloth RL Guide](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide) — GRPO setup, save methods
+- [vLLM Official Documentation](https://docs.vllm.ai/en/latest/) — OpenAI-compatible serving
+- [RunPod Storage Documentation](https://docs.runpod.io/pods/storage/types) — Network volumes, persistence
+- [PyPI verified versions](https://pypi.org/) — unsloth 2026.1.4, trl 0.27.1, vllm 0.15.0, transformers 5.0.0, peft 0.18.1
 
 ### Secondary (MEDIUM confidence)
-- [RLVRR: From Verifiable Dot to Reward Chain](https://arxiv.org/abs/2601.18533) — decomposed rewards
-- [DRIVE: Data Curation Best Practices for RLVR](https://arxiv.org/abs/2511.06307) — difficulty selection, dedup
-- [DEPO: High Data Efficiency in RLVR](https://arxiv.org/abs/2509.01321) — medium-difficulty examples
-- [One-Shot RLVR](https://arxiv.org/abs/2504.20571) — few-shot examples effectiveness
-- [Precision over Diversity](https://arxiv.org/abs/2601.04954) — rule-based rewards outperform LLM-judge
-- [Reward Hacking Mitigation](https://arxiv.org/abs/2509.15557) — composite rewards
-- [RLVR Noisy Rewards](https://arxiv.org/abs/2510.00915) — verifier imperfection, 38% false negatives
-- [DPH-RL: Diversity Collapse](https://arxiv.org/abs/2509.07430) — forward-KL vs reverse-KL
+- [HuggingFace blog: Unsloth + TRL](https://huggingface.co/blog/unsloth-trl) — Performance benchmarks
+- [RunPod GPU pricing](https://www.runpod.io/pricing) — Verified 2026-01-31
+- [DPO vs GRPO comparison](https://towardsai.net/p/artificial-intelligence/mastering-llm-fine-tuning-grpo-ppo-and-dpo-compared) — When to use each
+- GitHub Issues: unslothai/unsloth #195, #2516, #1089 (merge degradation); #2916, #3750 (version mismatch); #2614 (GRPO loss=0)
+- GitHub Issues: huggingface/trl #2644, #2771 (GRPO rewards); #2578 (DPO bugs)
+- GitHub Issues: QwenLM/Qwen3 #1718 (chat template), #1286 (thinking mode)
 
-### Tertiary (LOW confidence, needs validation)
-- [VeRL: Prepare Data](https://verl.readthedocs.io/en/latest/preparation/prepare_data.html) — VeRL parquet schema
-- [smolagents Issue #1872](https://github.com/huggingface/smolagents/issues/1872) — streaming breaks CodeAgent
-- [smolagents Issue #322](https://github.com/huggingface/smolagents/issues/322) — capturing full thinking
-- [Promptfoo: RLVR Explained](https://www.promptfoo.dev/blog/rlvr-explained/) — "search compression" insight
+### Tertiary (LOW confidence)
+- VRAM estimates for Qwen3-32B QLoRA (~26-30GB) — Extrapolated from Unsloth's 32B table and community reports
+- Training time estimates (2-4 hrs on A6000) — Based on smaller model benchmarks; actual time varies with dataset size
+- AWQ quantization quality for parodies — No domain-specific research; general quantization tradeoffs apply
 
 ---
 *Research completed: 2026-01-31*
