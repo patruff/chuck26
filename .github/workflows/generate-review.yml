@@ -1,0 +1,158 @@
+name: Generate Parodies for Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model to use for generation'
+        required: false
+        default: 'qwen-3-32b'
+      adapter:
+        description: 'Adapter/LoRA name (leave empty for base model)'
+        required: false
+        default: ''
+      input_csv:
+        description: 'Path to input CSV with title column'
+        required: false
+        default: 'titles.csv'
+      titles_count:
+        description: 'Number of titles to process (0 = all)'
+        required: false
+        default: '10'
+  schedule:
+    # Run daily at 6 AM UTC
+    - cron: '0 6 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Prepare input CSV
+      id: prepare
+      run: |
+        INPUT_CSV="${{ inputs.input_csv || 'titles.csv' }}"
+        COUNT="${{ inputs.titles_count || '10' }}"
+        MODEL="${{ inputs.model || 'qwen-3-32b' }}"
+        ADAPTER="${{ inputs.adapter || '' }}"
+        TIMESTAMP=$(date -u +%Y-%m-%d-%H%M%S)
+
+        # Normalize column name: if CSV has 'original' but not 'title', rename it
+        HEADER=$(head -1 "$INPUT_CSV")
+        if echo "$HEADER" | grep -q "original" && ! echo "$HEADER" | grep -q "title"; then
+          echo "Renaming 'original' column to 'title'"
+          sed '1s/original/title/' "$INPUT_CSV" > /tmp/normalized_input.csv
+          INPUT_CSV="/tmp/normalized_input.csv"
+        fi
+
+        # If count > 0, take a random sample
+        if [ "$COUNT" -gt 0 ] 2>/dev/null; then
+          echo "Sampling $COUNT titles from $INPUT_CSV"
+          head -1 "$INPUT_CSV" > /tmp/sampled_input.csv
+          tail -n +2 "$INPUT_CSV" | shuf | head -n "$COUNT" >> /tmp/sampled_input.csv
+          INPUT_CSV="/tmp/sampled_input.csv"
+        fi
+
+        echo "input_csv=$INPUT_CSV" >> "$GITHUB_OUTPUT"
+        echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+        echo "adapter=$ADAPTER" >> "$GITHUB_OUTPUT"
+        echo "timestamp=$TIMESTAMP" >> "$GITHUB_OUTPUT"
+        echo "branch=review/$TIMESTAMP" >> "$GITHUB_OUTPUT"
+
+    - name: Generate parodies
+      env:
+        CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      run: |
+        python scripts/generate_for_review.py \
+          "${{ steps.prepare.outputs.input_csv }}" \
+          --settings settings.json \
+          --output-dir reviews/pending \
+          --model "${{ steps.prepare.outputs.model }}" \
+          --adapter "${{ steps.prepare.outputs.adapter }}"
+
+    - name: Create review branch and PR
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        BRANCH="${{ steps.prepare.outputs.branch }}"
+        MODEL="${{ steps.prepare.outputs.model }}"
+        ADAPTER="${{ steps.prepare.outputs.adapter }}"
+        TIMESTAMP="${{ steps.prepare.outputs.timestamp }}"
+
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git checkout -b "$BRANCH"
+        git add reviews/pending/
+
+        # Count generated rows
+        CSV_FILE=$(ls -t reviews/pending/review-*.csv | head -1)
+        TOTAL=$(tail -n +2 "$CSV_FILE" | wc -l)
+        TITLES=$(tail -n +2 "$CSV_FILE" | cut -d',' -f2 | sort -u | wc -l)
+
+        git commit -m "Add parody review batch: $TIMESTAMP ($TOTAL candidates from $TITLES titles)"
+
+        git push origin "$BRANCH"
+
+        # Build PR body with review instructions
+        ADAPTER_INFO=""
+        if [ -n "$ADAPTER" ]; then
+          ADAPTER_INFO="- **Adapter**: $ADAPTER"
+        fi
+
+        gh pr create \
+          --title "Review parodies: $TIMESTAMP" \
+          --body "$(cat <<EOF
+## Parody Review Batch
+
+- **Generated**: $TIMESTAMP
+- **Model**: $MODEL
+$ADAPTER_INFO
+- **Candidates**: $TOTAL parody candidates across $TITLES titles
+
+## How to Review
+
+Edit the CSV file in \`reviews/pending/\` and change the \`status\` column:
+
+| Status | Meaning |
+|--------|---------|
+| \`chosen\` | Good parody - will be used as the preferred response in DPO |
+| \`rejected\` | Bad parody - will be used as the rejected response in DPO |
+| \`pending\` | Skip - won't be included in DPO data |
+| \`error\` | Generation failed - for reference only |
+
+### Tips
+- For each **input_title**, mark at least one \`chosen\` and one \`rejected\` to form a DPO pair
+- You can mark multiple candidates as \`chosen\` or \`rejected\` per title
+- Every (chosen, rejected) combination for the same title becomes a training pair
+- Check the \`phonetic_scores\` and \`humor_note\` columns for context
+
+## After Review
+
+1. Commit your status changes to this branch
+2. Merge the PR
+3. The **Process Reviews** workflow will automatically:
+   - Build DPO preference pairs from your chosen/rejected labels
+   - Push the data to HuggingFace Hub
+   - Move the CSV to \`reviews/processed/\`
+EOF
+)"
+
+        echo "PR created for review batch $TIMESTAMP"

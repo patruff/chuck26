@@ -1,0 +1,82 @@
+name: Drive Review App
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Command to run'
+        required: true
+        type: choice
+        options:
+          - generate
+          - process
+          - status
+      model:
+        description: 'Model name (generate only)'
+        required: false
+        default: 'qwen-3-32b'
+      adapter:
+        description: 'Adapter/LoRA name (generate only)'
+        required: false
+        default: ''
+      limit:
+        description: 'Max titles per input file (0 = all, generate only)'
+        required: false
+        default: '10'
+      dpo_repo:
+        description: 'HF Hub repo for DPO dataset (process only)'
+        required: false
+        default: 'patruff/chuckles-dpo'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+        pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+    - name: Run generate
+      if: inputs.command == 'generate'
+      env:
+        GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+        CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      run: |
+        ARGS="generate --settings settings.json"
+        if [ -n "${{ inputs.model }}" ]; then
+          ARGS="$ARGS --model ${{ inputs.model }}"
+        fi
+        if [ -n "${{ inputs.adapter }}" ]; then
+          ARGS="$ARGS --adapter ${{ inputs.adapter }}"
+        fi
+        if [ "${{ inputs.limit }}" != "0" ]; then
+          ARGS="$ARGS --limit ${{ inputs.limit }}"
+        fi
+        python scripts/drive_review_app.py $ARGS
+
+    - name: Run process
+      if: inputs.command == 'process'
+      env:
+        GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        python scripts/drive_review_app.py process \
+          --dpo-repo "${{ inputs.dpo_repo }}"
+
+    - name: Run status
+      if: inputs.command == 'status'
+      env:
+        GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+      run: |
+        python scripts/drive_review_app.py status

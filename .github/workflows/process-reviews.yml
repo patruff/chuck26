@@ -1,0 +1,94 @@
+name: Process Reviews to DPO
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'reviews/pending/review-*.csv'
+  workflow_dispatch:
+    inputs:
+      dpo_repo:
+        description: 'HuggingFace Hub repo for DPO dataset'
+        required: false
+        default: 'patruff/chuckles-dpo'
+      no_push:
+        description: 'Skip pushing to HuggingFace (dry run)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Check for reviewed CSVs
+      id: check
+      run: |
+        # Look for CSVs with at least one chosen or rejected row
+        FOUND=false
+        for f in reviews/pending/review-*.csv; do
+          if [ -f "$f" ]; then
+            if grep -q ',chosen\|,rejected' "$f" 2>/dev/null; then
+              FOUND=true
+              echo "Found reviewed CSV: $f"
+            fi
+          fi
+        done
+        echo "has_reviews=$FOUND" >> "$GITHUB_OUTPUT"
+
+    - name: Process reviews
+      if: steps.check.outputs.has_reviews == 'true'
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        DPO_REPO="${{ inputs.dpo_repo || 'patruff/chuckles-dpo' }}"
+        NO_PUSH="${{ inputs.no_push || 'false' }}"
+
+        ARGS="--dpo-repo $DPO_REPO"
+        if [ "$NO_PUSH" = "true" ]; then
+          ARGS="$ARGS --no-push"
+        fi
+
+        python scripts/process_reviews.py $ARGS
+
+    - name: Commit processed files
+      if: steps.check.outputs.has_reviews == 'true'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git add reviews/pending/ reviews/processed/
+
+        if git diff --cached --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Process reviewed parodies into DPO data"
+          git push
+        fi
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "=== Review Processing Complete ==="
+        echo ""
+        echo "Pending CSVs remaining:"
+        ls reviews/pending/review-*.csv 2>/dev/null || echo "  (none)"
+        echo ""
+        echo "Processed CSVs:"
+        ls reviews/processed/ 2>/dev/null || echo "  (none)"
