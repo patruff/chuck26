@@ -91,11 +91,11 @@ Plans:
   3. User can run a merge script that produces a 16-bit merged model and pushes it to HuggingFace Hub
   4. Merged model produces outputs comparable to adapter-loaded model on test prompts (no merge degradation)
   5. Qwen3 chat template is preserved -- model responds in correct conversational format after fine-tuning
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
+- [ ] 05-01-PLAN.md -- RunPod setup script + DPO training script (setup_runpod.sh, train_dpo.py)
+- [ ] 05-02-PLAN.md -- LoRA merge + Hub push + merge validation (merge_and_push.py, validate_merge.py)
 
 ### Phase 6: Inference & Loop Validation
 **Goal**: Fine-tuned model served via vLLM and accessible through existing CLI, completing the generate-train-serve loop
@@ -138,7 +138,7 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 2. Generation Engine | v1.0 | 2/2 | Complete | 2026-01-31 |
 | 3. Dataset Conversion | v1.0 | 2/2 | Complete | 2026-01-31 |
 | 4. Pipeline CLI | v1.0 | 1/1 | Complete | 2026-01-31 |
-| 5. DPO Training & Model Export | v1.1 | 0/? | Not started | - |
+| 5. DPO Training & Model Export | v1.1 | 0/2 | Planned | - |
 | 6. Inference & Loop Validation | v1.1 | 0/? | Not started | - |
 | 7. GRPO Training Pipeline | v1.1 | 0/? | Not started | - |
 
