@@ -5,22 +5,22 @@
 See: .planning/PROJECT.md (updated 2026-01-31)
 
 **Core value:** Generate quality reasoning data about phonetic parodies, in formats ready for GRPO/DPO fine-tuning, then close the loop by training and deploying the model.
-**Current focus:** Phase 5 - DPO Training & Model Export
+**Current focus:** Phase 6 - Inference & Loop Validation (Phase 5 complete)
 
 ## Current Position
 
 Phase: 5 of 7 (DPO Training & Model Export)
-Plan: 1 of 2 in current phase
-Status: In progress
-Last activity: 2026-01-31 - Completed 05-01-PLAN.md (RunPod setup + DPO training script)
+Plan: 2 of 2 in current phase
+Status: Phase complete
+Last activity: 2026-01-31 - Completed 05-02-PLAN.md (LoRA merge + Hub push + merge validation)
 
-Progress: [========..] 80% (v1.0 complete, 05-01 done, 05-02 + phases 6-7 ahead)
+Progress: [=========.] 90% (v1.0 complete, Phase 5 complete, phases 6-7 ahead)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8 (7 v1.0 + 1 v1.1)
-- Average duration: ~3 min (05-01)
+- Total plans completed: 9 (7 v1.0 + 2 v1.1)
+- Average duration: ~4 min (05-02)
 - Total execution time: -
 
 **By Phase (v1.0 -- archived):**
@@ -36,12 +36,13 @@ Progress: [========..] 80% (v1.0 complete, 05-01 done, 05-02 + phases 6-7 ahead)
 
 | Phase | Plans | Status |
 |-------|-------|--------|
-| 5. DPO Training & Model Export | 1/2 | In progress |
-| 6. GRPO Training | 0/? | Not started |
-| 7. vLLM Inference | 0/? | Not started |
+| 5. DPO Training & Model Export | 2/2 | Complete |
+| 6. Inference & Loop Validation | 0/? | Not started |
+| 7. GRPO Training Pipeline | 0/? | Not started |
 
 **Recent Trend:**
 - 05-01 executed cleanly, no deviations
+- 05-02 executed cleanly, no deviations
 - Trend: Stable
 
 ## Accumulated Context
@@ -59,6 +60,9 @@ Recent decisions affecting current work:
 - [05-01]: Install Unsloth before TRL (controls dependency versions via monkey-patching)
 - [05-01]: Save LoRA adapter to Hub before merge step (safety backup against merge bugs)
 - [05-01]: Verify chat template at training start (catch Qwen3 thinking-mode mismatch early)
+- [05-02]: Save merged model locally before Hub push (safety net for known bug #3146)
+- [05-02]: Include fallback HfApi.upload_folder when push_to_hub_merged fails
+- [05-02]: Validate quality by non-empty parody content, not exact output match (quantization differences expected)
 
 ### Pending Todos
 
@@ -67,11 +71,12 @@ None.
 ### Blockers/Concerns
 
 - GRPO reward function effectiveness as training signals is unproven (mitigated by DPO-first approach)
-- RunPod container storage is ephemeral -- addressed in setup_runpod.sh and train_dpo.py (all paths use /workspace/)
-- Qwen3 chat template must match exactly -- addressed with enable_thinking=False verification in train_dpo.py
+- RunPod container storage is ephemeral -- addressed in setup_runpod.sh and all training scripts (all paths use /workspace/)
+- Qwen3 chat template must match exactly -- addressed with enable_thinking=False in all scripts
+- Unsloth push_to_hub_merged bug #3146 -- mitigated with local save + fallback upload in merge_and_push.py
 
 ## Session Continuity
 
 Last session: 2026-01-31
-Stopped at: Completed 05-01-PLAN.md
+Stopped at: Completed 05-02-PLAN.md (Phase 5 complete)
 Resume file: None
