@@ -32,9 +32,9 @@ Generate quality reasoning data about what makes a good phonetic parody, in form
 
 ### Active
 
-- [ ] DPO training on Qwen3-32B with 4-bit QLoRA via Unsloth on RunPod
+- [x] DPO training on Qwen3-32B with 4-bit QLoRA via Unsloth on RunPod
 - [ ] GRPO training with composite reward functions from v1 datasets
-- [ ] LoRA adapter merging and model push to HuggingFace Hub
+- [x] LoRA adapter merging and model push to HuggingFace Hub
 - [ ] Inference serving via vLLM on RunPod (cheaper GPU tier)
 - [ ] Existing CLI (`chuckles generate`) compatible with vLLM/Ollama endpoints
 - [ ] Full improvement loop: generate → train → inference → generate better data
@@ -82,8 +82,8 @@ Generate quality reasoning data about what makes a good phonetic parody, in form
 | Dual dataset output (GRPO + DPO) | GRPO for verifiable reward training, DPO for preference learning from human examples | ✓ Good |
 | User preferences opaque to app | App injects the preference text into prompts without parsing it | ✓ Good |
 | Batch-only (CSV in/out) | Simplifies architecture, matches the data generation workflow | ✓ Good |
-| Standalone training scripts | Easy to copy-paste to RunPod, no package install needed on training pod | — Pending |
-| Unsloth for QLoRA | Efficient 4-bit training, 2x faster than standard PEFT | — Pending |
+| Standalone training scripts | Easy to copy-paste to RunPod, no package install needed on training pod | ✓ Good |
+| Unsloth for QLoRA | Efficient 4-bit training, 2x faster than standard PEFT | ✓ Good |
 | vLLM for inference serving | High throughput, OpenAI-compatible API, works with existing adapter | — Pending |
 
 ---

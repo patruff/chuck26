@@ -75,7 +75,7 @@ Plans:
 
 **Milestone Goal:** Train Qwen3-32B on generated datasets, serve the fine-tuned model, and close the improvement loop so the CLI generates better parodies with the trained model.
 
-- [ ] **Phase 5: DPO Training & Model Export** - Train DPO on Qwen3-32B, merge LoRA, push to Hub
+- [x] **Phase 5: DPO Training & Model Export** - Train DPO on Qwen3-32B, merge LoRA, push to Hub
 - [ ] **Phase 6: Inference & Loop Validation** - Serve fine-tuned model, validate CLI compatibility, close the loop
 - [ ] **Phase 7: GRPO Training Pipeline** - Train with custom phonetic reward functions for refinement
 
@@ -94,8 +94,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md -- RunPod setup script + DPO training script (setup_runpod.sh, train_dpo.py)
-- [ ] 05-02-PLAN.md -- LoRA merge + Hub push + merge validation (merge_and_push.py, validate_merge.py)
+- [x] 05-01-PLAN.md -- RunPod setup script + DPO training script (setup_runpod.sh, train_dpo.py)
+- [x] 05-02-PLAN.md -- LoRA merge + Hub push + merge validation (merge_and_push.py, validate_merge.py)
 
 ### Phase 6: Inference & Loop Validation
 **Goal**: Fine-tuned model served via vLLM and accessible through existing CLI, completing the generate-train-serve loop
@@ -138,7 +138,7 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 2. Generation Engine | v1.0 | 2/2 | Complete | 2026-01-31 |
 | 3. Dataset Conversion | v1.0 | 2/2 | Complete | 2026-01-31 |
 | 4. Pipeline CLI | v1.0 | 1/1 | Complete | 2026-01-31 |
-| 5. DPO Training & Model Export | v1.1 | 0/2 | Planned | - |
+| 5. DPO Training & Model Export | v1.1 | 2/2 | Complete | 2026-01-31 |
 | 6. Inference & Loop Validation | v1.1 | 0/? | Not started | - |
 | 7. GRPO Training Pipeline | v1.1 | 0/? | Not started | - |
 

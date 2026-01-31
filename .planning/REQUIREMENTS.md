@@ -41,11 +41,11 @@
 
 ### DPO Training
 
-- [ ] **DPO-01**: Load Qwen3-32B in 4-bit QLoRA via Unsloth with gradient checkpointing on RunPod A6000/A100
-- [ ] **DPO-02**: Train with TRL DPOTrainer using existing DPO dataset from HuggingFace Hub
-- [ ] **DPO-03**: Preserve Qwen3 chat template throughout training (match base model template exactly)
-- [ ] **DPO-04**: Save training checkpoints every N steps to RunPod network volume
-- [ ] **DPO-05**: Standalone training script in `training/` directory (copy-paste to RunPod)
+- [x] **DPO-01**: Load Qwen3-32B in 4-bit QLoRA via Unsloth with gradient checkpointing on RunPod A6000/A100
+- [x] **DPO-02**: Train with TRL DPOTrainer using existing DPO dataset from HuggingFace Hub
+- [x] **DPO-03**: Preserve Qwen3 chat template throughout training (match base model template exactly)
+- [x] **DPO-04**: Save training checkpoints every N steps to RunPod network volume
+- [x] **DPO-05**: Standalone training script in `training/` directory (copy-paste to RunPod)
 
 ### GRPO Training
 
@@ -57,10 +57,10 @@
 
 ### Model Export
 
-- [ ] **EXP-01**: Save LoRA adapter to HuggingFace Hub (~100-300MB)
-- [ ] **EXP-02**: Merge LoRA into FP16 base model via Unsloth `merged_16bit` (not into 4-bit base)
-- [ ] **EXP-03**: Push merged model to HuggingFace Hub
-- [ ] **EXP-04**: Validate merged model quality against adapter-loaded model (run test prompts, compare outputs)
+- [x] **EXP-01**: Save LoRA adapter to HuggingFace Hub (~100-300MB)
+- [x] **EXP-02**: Merge LoRA into FP16 base model via Unsloth `merged_16bit` (not into 4-bit base)
+- [x] **EXP-03**: Push merged model to HuggingFace Hub
+- [x] **EXP-04**: Validate merged model quality against adapter-loaded model (run test prompts, compare outputs)
 
 ### Inference Serving
 
@@ -137,15 +137,15 @@
 | DATA-05 | Phase 3 | Complete |
 | PROJ-01 | Phase 1 | Complete |
 | PROJ-02 | Phase 4 | Complete |
-| DPO-01 | Phase 5 | Pending |
-| DPO-02 | Phase 5 | Pending |
-| DPO-03 | Phase 5 | Pending |
-| DPO-04 | Phase 5 | Pending |
-| DPO-05 | Phase 5 | Pending |
-| EXP-01 | Phase 5 | Pending |
-| EXP-02 | Phase 5 | Pending |
-| EXP-03 | Phase 5 | Pending |
-| EXP-04 | Phase 5 | Pending |
+| DPO-01 | Phase 5 | Complete |
+| DPO-02 | Phase 5 | Complete |
+| DPO-03 | Phase 5 | Complete |
+| DPO-04 | Phase 5 | Complete |
+| DPO-05 | Phase 5 | Complete |
+| EXP-01 | Phase 5 | Complete |
+| EXP-02 | Phase 5 | Complete |
+| EXP-03 | Phase 5 | Complete |
+| EXP-04 | Phase 5 | Complete |
 | INF-01 | Phase 6 | Pending |
 | INF-02 | Phase 6 | Pending |
 | INF-03 | Phase 6 | Pending |
@@ -165,4 +165,4 @@
 
 ---
 *Requirements defined: 2026-01-31*
-*Last updated: 2026-01-31 after v1.1 roadmap creation*
+*Last updated: 2026-01-31 after Phase 5 verified complete*
