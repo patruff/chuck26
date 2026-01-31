@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chucklesPRIME"
+version = "0.1.0"
+description = "Phonetically-sound parody title generator with RLVR dataset output"
+requires-python = ">=3.10"
+dependencies = [
+    "smolagents>=1.24.0",
+    "openai>=1.0.0",
+    "rich",
+    "pronouncing",
+    "datasets>=3.0.0",
+    "huggingface-hub>=0.20.0",
+    "flask>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+chuckles = "chuckles_prime.cli:main"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests that require live API credentials (deselect with '-k not integration')",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

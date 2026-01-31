@@ -1,0 +1,2 @@
+[console_scripts]
+chuckles = chuckles_prime.cli:main

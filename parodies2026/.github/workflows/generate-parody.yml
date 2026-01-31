@@ -1,0 +1,48 @@
+name: Generate Parodies from Google Drive
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Cerebras model to use'
+        required: false
+        default: 'qwen-3-32b'
+  schedule:
+    # Run every 6 hours to check for new input files
+    - cron: '0 */6 * * *'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Process parodies from Google Drive
+      env:
+        CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        GOOGLE_DRIVE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}
+        CEREBRAS_MODEL: ${{ inputs.model || 'qwen-3-32b' }}
+      run: |
+        echo "🔄 Processing input files from Google Drive..."
+        python drive_batch_processor.py
+
+    - name: Generate summary
+      if: always()
+      run: |
+        echo "=== Processing Complete ==="
+        echo "Check Google Drive parodiesdata folder for results:"
+        echo "  - input/: Source CSV files with titles"
+        echo "  - output/: Generated parodies with reasoning"
+        echo "  - dpo/: Human-annotated chosen vs rejected parodies"
