@@ -137,32 +137,32 @@
 | DATA-05 | Phase 3 | Complete |
 | PROJ-01 | Phase 1 | Complete |
 | PROJ-02 | Phase 4 | Complete |
-| DPO-01 | — | Pending |
-| DPO-02 | — | Pending |
-| DPO-03 | — | Pending |
-| DPO-04 | — | Pending |
-| DPO-05 | — | Pending |
-| GRPO-01 | — | Pending |
-| GRPO-02 | — | Pending |
-| GRPO-03 | — | Pending |
-| GRPO-04 | — | Pending |
-| GRPO-05 | — | Pending |
-| EXP-01 | — | Pending |
-| EXP-02 | — | Pending |
-| EXP-03 | — | Pending |
-| EXP-04 | — | Pending |
-| INF-01 | — | Pending |
-| INF-02 | — | Pending |
-| INF-03 | — | Pending |
-| LOOP-01 | — | Pending |
-| LOOP-02 | — | Pending |
+| DPO-01 | Phase 5 | Pending |
+| DPO-02 | Phase 5 | Pending |
+| DPO-03 | Phase 5 | Pending |
+| DPO-04 | Phase 5 | Pending |
+| DPO-05 | Phase 5 | Pending |
+| EXP-01 | Phase 5 | Pending |
+| EXP-02 | Phase 5 | Pending |
+| EXP-03 | Phase 5 | Pending |
+| EXP-04 | Phase 5 | Pending |
+| INF-01 | Phase 6 | Pending |
+| INF-02 | Phase 6 | Pending |
+| INF-03 | Phase 6 | Pending |
+| LOOP-01 | Phase 6 | Pending |
+| LOOP-02 | Phase 6 | Pending |
+| GRPO-01 | Phase 7 | Pending |
+| GRPO-02 | Phase 7 | Pending |
+| GRPO-03 | Phase 7 | Pending |
+| GRPO-04 | Phase 7 | Pending |
+| GRPO-05 | Phase 7 | Pending |
 
 **Coverage:**
 - v1.0 requirements: 17 total (all complete)
-- v1.1 requirements: 16 total (all pending)
-- Mapped to phases: 17 (v1.0) + 0 (v1.1 — awaiting roadmap)
-- Unmapped: 16
+- v1.1 requirements: 16 total (all mapped)
+- Mapped to phases: 17 (v1.0) + 16 (v1.1) = 33/33
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-01-31*
-*Last updated: 2026-01-31 after milestone v1.1 requirements definition*
+*Last updated: 2026-01-31 after v1.1 roadmap creation*
