@@ -13,6 +13,7 @@
 #
 # Usage:
 #   chmod +x setup_inference.sh
+#   ./setup_inference.sh --test   # Small model (Qwen3-0.6B) to validate pipeline format
 #   ./setup_inference.sh --bnb    # BitsAndBytes NF4 runtime quantization (default)
 #   ./setup_inference.sh --awq    # Serve pre-quantized AWQ model (faster)
 #   ./setup_inference.sh --help   # Show usage
@@ -32,6 +33,10 @@ MODEL_ID="patruff/chuckles-qwen3-32b-dpo"
 
 # Pre-quantized AWQ model on Hub (produced by quantize_awq.py)
 AWQ_MODEL_ID="patruff/chuckles-qwen3-32b-dpo-awq"
+
+# Small test model -- validates pipeline format without needing expensive GPU.
+# Same Qwen3 architecture family, so chat template and API behavior are identical.
+TEST_MODEL_ID="Qwen/Qwen3-0.6B"
 
 # Served model name -- MUST match settings.json model_name field.
 # Without this, vLLM uses the full HF repo ID and requests fail with 404.
@@ -54,6 +59,9 @@ GPU_MEM_UTIL=0.90
 QUANT_MODE="bnb"  # default
 
 case "${1:-}" in
+    --test)
+        QUANT_MODE="test"
+        ;;
     --bnb)
         QUANT_MODE="bnb"
         ;;
@@ -61,9 +69,14 @@ case "${1:-}" in
         QUANT_MODE="awq"
         ;;
     --help|-h)
-        echo "Usage: $0 [--bnb | --awq | --help]"
+        echo "Usage: $0 [--test | --bnb | --awq | --help]"
         echo ""
         echo "Options:"
+        echo "  --test  Small model (Qwen3-0.6B) to validate the pipeline format."
+        echo "          Fits on any GPU (~1.2GB). Tests API format, settings.json"
+        echo "          integration, and validate_inference.py without burning GPU"
+        echo "          hours on the full 32B model. Use this first!"
+        echo ""
         echo "  --bnb   BitsAndBytes NF4 runtime quantization (default)"
         echo "          Simpler setup, no pre-quantization needed."
         echo "          ~168 tok/s throughput. Needs ~65GB+ system RAM for loading."
@@ -80,17 +93,26 @@ case "${1:-}" in
         ;;
     *)
         echo "ERROR: Unknown option '$1'"
-        echo "Usage: $0 [--bnb | --awq | --help]"
+        echo "Usage: $0 [--test | --bnb | --awq | --help]"
         exit 1
         ;;
 esac
+
+# In test mode, override served name to match the test model
+if [ "$QUANT_MODE" = "test" ]; then
+    SERVED_NAME="$TEST_MODEL_ID"
+fi
 
 echo "============================================================"
 echo " chucklesPRIME - vLLM Inference Server"
 echo "============================================================"
 echo ""
 echo " Quantization mode: $QUANT_MODE"
-echo " Model:             $MODEL_ID"
+if [ "$QUANT_MODE" = "test" ]; then
+    echo " Model:             $TEST_MODEL_ID (small test model)"
+else
+    echo " Model:             $MODEL_ID"
+fi
 echo " Served as:         $SERVED_NAME"
 echo " Port:              $PORT"
 echo " Max context:       $MAX_MODEL_LEN tokens"
@@ -167,7 +189,21 @@ echo "[4/4] Launching vLLM server..."
 echo ""
 
 # Select model and quantization flags based on mode
-if [ "$QUANT_MODE" = "bnb" ]; then
+if [ "$QUANT_MODE" = "test" ]; then
+    LAUNCH_MODEL="$TEST_MODEL_ID"
+    QUANT_FLAGS=""
+    echo "  Mode: TEST (small Qwen3-0.6B -- pipeline format validation)"
+    echo "  Model: $LAUNCH_MODEL"
+    echo ""
+    echo "  This validates the full pipeline format:"
+    echo "    - vLLM startup and API exposure"
+    echo "    - OpenAI-compatible chat completions"
+    echo "    - validate_inference.py connectivity"
+    echo "    - settings.json integration with CLI"
+    echo ""
+    echo "  The model is tiny (~1.2GB). Output quality doesn't matter --"
+    echo "  you're testing that the FORMAT works, not the CONTENT."
+elif [ "$QUANT_MODE" = "bnb" ]; then
     LAUNCH_MODEL="$MODEL_ID"
     QUANT_FLAGS="--quantization bitsandbytes"
     echo "  Mode: BitsAndBytes NF4 (runtime quantization)"
@@ -187,12 +223,22 @@ echo ""
 echo " Once running, test with:"
 echo "   curl http://localhost:$PORT/v1/models"
 echo ""
-echo " Update your settings.json with:"
-echo "   \"api_base_url\": \"http://<POD_IP>:$PORT/v1\""
-echo "   \"model_name\": \"$SERVED_NAME\""
-echo ""
-echo " Set API key env var (vLLM doesn't require one, but the CLI expects it):"
-echo "   export VLLM_API_KEY='not-needed'"
+if [ "$QUANT_MODE" = "test" ]; then
+    echo " This is a FORMAT TEST -- validate the pipeline with:"
+    echo "   python validate_inference.py --finetuned-url http://localhost:$PORT/v1 --finetuned-model $SERVED_NAME"
+    echo ""
+    echo " Output quality will be low (0.6B model). You're verifying:"
+    echo "   - API responds to chat completions"
+    echo "   - validate_inference.py scoring works"
+    echo "   - settings.json integration format is correct"
+else
+    echo " Update your settings.json with:"
+    echo "   \"api_base_url\": \"http://<POD_IP>:$PORT/v1\""
+    echo "   \"model_name\": \"$SERVED_NAME\""
+    echo ""
+    echo " Set API key env var (vLLM doesn't require one, but the CLI expects it):"
+    echo "   export VLLM_API_KEY='not-needed'"
+fi
 echo ""
 echo "============================================================"
 echo ""
