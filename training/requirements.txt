@@ -1,0 +1,28 @@
+# Training dependencies for DPO fine-tuning
+# Install with: pip install -r requirements.txt
+
+# Core ML
+torch>=2.1.0
+transformers>=4.40.0
+datasets>=3.0.0
+accelerate>=0.27.0
+
+# DPO training
+trl>=0.8.0
+peft>=0.10.0
+
+# Quantization (for 4-bit/8-bit training)
+bitsandbytes>=0.43.0
+
+# Phonetic evaluation
+pronouncing>=0.2.0
+
+# Logging (optional)
+wandb>=0.16.0
+
+# Flash attention (optional, for faster training)
+# Uncomment if using compatible GPU (Ampere or newer)
+# flash-attn>=2.5.0
+
+# HuggingFace Hub
+huggingface-hub>=0.20.0

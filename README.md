@@ -4,6 +4,28 @@ Phonetically-sound parody title generator with DPO preference dataset output.
 
 Generates funny parody titles (e.g. "The Matrix" -> "The Mattress") using AI agents with phonetic verification tools, then provides workflows for human review and DPO (Direct Preference Optimization) dataset creation.
 
+## Training a Parody Model
+
+Once you have DPO preference data, train your own parody model:
+
+```bash
+cd training
+
+# Train on RunPod (RTX 3090, ~$0.50 total)
+python train_dpo.py \
+    --model Qwen/Qwen2.5-1.5B-Instruct \
+    --dataset patruff/chuckles-dpo \
+    --output ./parody-model \
+    --use-4bit
+
+# Automatic evaluation
+python evaluate_parodies.py --model ./parody-model
+```
+
+See **[training/README.md](training/README.md)** for full RunPod setup, cheap hardware recommendations, and automatic testing.
+
+---
+
 ## Generating a DPO Dataset: Step-by-Step
 
 There are two workflows for reviewing parodies and building DPO data: **GitHub PR-based** and **Google Drive-based**. Both track provenance (model name, adapter/LoRA) for every candidate.
