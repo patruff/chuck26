@@ -1,0 +1,175 @@
+name: Train on RunPod
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Base model to fine-tune'
+        required: false
+        default: 'Qwen/Qwen2.5-1.5B-Instruct'
+        type: choice
+        options:
+          - 'Qwen/Qwen2.5-1.5B-Instruct'
+          - 'Qwen/Qwen2.5-3B-Instruct'
+          - 'Qwen/Qwen2.5-7B-Instruct'
+          - 'meta-llama/Llama-3.2-1B-Instruct'
+          - 'meta-llama/Llama-3.2-3B-Instruct'
+          - 'microsoft/Phi-3-mini-4k-instruct'
+      dataset:
+        description: 'DPO dataset on HuggingFace'
+        required: false
+        default: 'patruff/chuckles-dpo'
+      output_repo:
+        description: 'HuggingFace repo for trained model (e.g., username/parody-model)'
+        required: true
+      gpu:
+        description: 'GPU type'
+        required: false
+        default: 'rtx3090'
+        type: choice
+        options:
+          - 'rtx3090'    # $0.22/hr, 24GB - Best value
+          - 'rtx4090'    # $0.44/hr, 24GB - Faster
+          - 'a40'        # $0.39/hr, 48GB - Larger models
+          - 'l40'        # $0.49/hr, 48GB
+          - 'a100-40'    # $1.09/hr, 40GB - Production
+          - 'a100-80'    # $1.69/hr, 80GB - Large models
+      epochs:
+        description: 'Training epochs'
+        required: false
+        default: '3'
+      batch_size:
+        description: 'Batch size'
+        required: false
+        default: '2'
+      min_pass_rate:
+        description: 'Minimum evaluation pass rate (0.0-1.0)'
+        required: false
+        default: '0.7'
+      wait_for_completion:
+        description: 'Wait for training to complete'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  launch-training:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180  # 3 hour max (training can take 1-2 hours)
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install RunPod SDK
+      run: pip install runpod
+
+    - name: Validate inputs
+      run: |
+        if [ -z "${{ inputs.output_repo }}" ]; then
+          echo "ERROR: output_repo is required"
+          exit 1
+        fi
+
+    - name: Launch training on RunPod
+      id: train
+      env:
+        RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        WAIT_FLAG=""
+        if [ "${{ inputs.wait_for_completion }}" = "false" ]; then
+          WAIT_FLAG="--no-wait"
+        fi
+
+        python training/runpod_train.py \
+          --model "${{ inputs.model }}" \
+          --dataset "${{ inputs.dataset }}" \
+          --output-repo "${{ inputs.output_repo }}" \
+          --gpu "${{ inputs.gpu }}" \
+          --epochs ${{ inputs.epochs }} \
+          --batch-size ${{ inputs.batch_size }} \
+          --min-pass-rate ${{ inputs.min_pass_rate }} \
+          $WAIT_FLAG \
+          2>&1 | tee training-output.log
+
+        # Extract pod ID for summary
+        POD_ID=$(grep -oP 'Pod created: \K[a-zA-Z0-9]+' training-output.log || echo "unknown")
+        echo "pod_id=$POD_ID" >> "$GITHUB_OUTPUT"
+
+    - name: Upload training log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: training-log
+        path: training-output.log
+
+    - name: Job Summary
+      if: always()
+      run: |
+        echo "## Training Job Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Model | \`${{ inputs.model }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Dataset | \`${{ inputs.dataset }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Output Repo | [${{ inputs.output_repo }}](https://huggingface.co/${{ inputs.output_repo }}) |" >> $GITHUB_STEP_SUMMARY
+        echo "| GPU | \`${{ inputs.gpu }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Epochs | ${{ inputs.epochs }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Pod ID | \`${{ steps.train.outputs.pod_id }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "✅ **Training completed successfully!**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View model: https://huggingface.co/${{ inputs.output_repo }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Training failed or timed out**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the training log artifact for details." >> $GITHUB_STEP_SUMMARY
+        fi
+
+
+  # Optional: Run evaluation after training completes
+  evaluate:
+    needs: launch-training
+    if: inputs.wait_for_completion == true
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install transformers torch huggingface-hub pronouncing
+
+    - name: Download and evaluate model
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        echo "Downloading trained model for local evaluation..."
+        huggingface-cli download ${{ inputs.output_repo }} --local-dir ./trained-model
+
+        echo "Running evaluation..."
+        python training/evaluate_parodies.py \
+          --model ./trained-model \
+          --output eval-report.json \
+          --min-pass-rate ${{ inputs.min_pass_rate }} || true
+
+        echo "## Evaluation Results" >> $GITHUB_STEP_SUMMARY
+        if [ -f eval-report.json ]; then
+          cat eval-report.json >> $GITHUB_STEP_SUMMARY
+        else
+          echo "Evaluation report not generated" >> $GITHUB_STEP_SUMMARY
+        fi

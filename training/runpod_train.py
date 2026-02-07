@@ -1,0 +1,451 @@
+"""RunPod automated training launcher.
+
+Creates a GPU pod on RunPod, runs DPO training, pushes results to
+HuggingFace, and terminates the pod. Designed for use in GitHub Actions
+or local automation.
+
+Usage:
+    # Set API keys
+    export RUNPOD_API_KEY="your-runpod-key"
+    export HF_TOKEN="your-hf-token"
+
+    # Launch training
+    python runpod_train.py \
+        --model Qwen/Qwen2.5-1.5B-Instruct \
+        --dataset patruff/chuckles-dpo \
+        --output-repo patruff/parody-1.5b-dpo \
+        --gpu "NVIDIA GeForce RTX 3090"
+
+    # Check status
+    python runpod_train.py --status --pod-id abc123
+
+    # Terminate early
+    python runpod_train.py --terminate --pod-id abc123
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from datetime import datetime
+
+try:
+    import runpod
+except ImportError:
+    print("ERROR: runpod package not installed. Run: pip install runpod")
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+# Docker image with PyTorch, CUDA, and common ML libraries
+DEFAULT_IMAGE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+
+# Default GPU types (cheapest to most expensive)
+GPU_OPTIONS = {
+    "rtx3090": "NVIDIA GeForce RTX 3090",      # ~$0.22/hr, 24GB
+    "rtx4090": "NVIDIA GeForce RTX 4090",      # ~$0.44/hr, 24GB
+    "a40": "NVIDIA A40",                        # ~$0.39/hr, 48GB
+    "l40": "NVIDIA L40",                        # ~$0.49/hr, 48GB
+    "a100-40": "NVIDIA A100 40GB PCIe",        # ~$1.09/hr, 40GB
+    "a100-80": "NVIDIA A100 80GB PCIe",        # ~$1.69/hr, 80GB
+}
+
+# Training script that runs on the pod
+TRAINING_SCRIPT = '''#!/bin/bash
+set -e
+
+echo "=== RunPod Training Job Started ==="
+echo "Time: $(date)"
+
+# Install dependencies
+pip install -q trl peft bitsandbytes datasets huggingface-hub accelerate pronouncing wandb
+
+# Clone the repository
+cd /workspace
+if [ ! -d "chuck26" ]; then
+    git clone https://github.com/{repo}.git chuck26
+fi
+cd chuck26/training
+
+# Login to HuggingFace
+echo "{hf_token}" | huggingface-cli login --token
+
+# Run training
+echo "=== Starting DPO Training ==="
+python train_dpo.py \\
+    --model {model} \\
+    --dataset {dataset} \\
+    --output /workspace/trained-model \\
+    --epochs {epochs} \\
+    --batch-size {batch_size} \\
+    --use-4bit \\
+    {extra_args}
+
+# Run evaluation
+echo "=== Running Evaluation ==="
+python evaluate_parodies.py \\
+    --model /workspace/trained-model \\
+    --output /workspace/eval-report.json \\
+    --min-pass-rate {min_pass_rate} || true
+
+# Push to HuggingFace Hub
+echo "=== Pushing to HuggingFace Hub ==="
+huggingface-cli upload {output_repo} /workspace/trained-model
+
+# Upload evaluation report
+huggingface-cli upload {output_repo} /workspace/eval-report.json --path-in-repo eval-report.json || true
+
+echo "=== Training Complete ==="
+echo "Model pushed to: https://huggingface.co/{output_repo}"
+
+# Signal completion
+touch /workspace/TRAINING_COMPLETE
+'''
+
+
+# ---------------------------------------------------------------------------
+# Pod management
+# ---------------------------------------------------------------------------
+
+def create_training_pod(
+    model: str,
+    dataset: str,
+    output_repo: str,
+    gpu_type: str = "NVIDIA GeForce RTX 3090",
+    epochs: int = 3,
+    batch_size: int = 2,
+    min_pass_rate: float = 0.7,
+    repo: str = "patruff/chuck26",
+    extra_args: str = "",
+    volume_size: int = 50,
+    hf_token: str | None = None,
+) -> dict:
+    """Create a RunPod GPU pod configured for training.
+
+    Returns:
+        Pod info dict with id, status, etc.
+    """
+    hf_token = hf_token or os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise ValueError("HF_TOKEN environment variable required")
+
+    # Build the training script
+    script = TRAINING_SCRIPT.format(
+        repo=repo,
+        model=model,
+        dataset=dataset,
+        output_repo=output_repo,
+        epochs=epochs,
+        batch_size=batch_size,
+        min_pass_rate=min_pass_rate,
+        extra_args=extra_args,
+        hf_token=hf_token,
+    )
+
+    # Create pod with startup command
+    pod_name = f"parody-train-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    print(f"Creating pod: {pod_name}")
+    print(f"  GPU: {gpu_type}")
+    print(f"  Model: {model}")
+    print(f"  Dataset: {dataset}")
+    print(f"  Output: {output_repo}")
+
+    # Create the pod
+    pod = runpod.create_pod(
+        name=pod_name,
+        image_name=DEFAULT_IMAGE,
+        gpu_type_id=gpu_type,
+        volume_in_gb=volume_size,
+        container_disk_in_gb=20,
+        docker_args=f"bash -c 'echo \"{script}\" > /workspace/train.sh && chmod +x /workspace/train.sh && /workspace/train.sh && sleep infinity'",
+    )
+
+    print(f"Pod created: {pod['id']}")
+    print(f"Status: {pod.get('desiredStatus', 'PENDING')}")
+
+    return pod
+
+
+def get_pod_status(pod_id: str) -> dict:
+    """Get current status of a pod."""
+    pod = runpod.get_pod(pod_id)
+    return pod
+
+
+def wait_for_pod_ready(pod_id: str, timeout: int = 300) -> bool:
+    """Wait for pod to be running. Returns True if ready."""
+    print(f"Waiting for pod {pod_id} to be ready...")
+    start = time.time()
+
+    while time.time() - start < timeout:
+        pod = get_pod_status(pod_id)
+        status = pod.get("desiredStatus", "UNKNOWN")
+
+        if status == "RUNNING":
+            print(f"Pod is running!")
+            return True
+        elif status in ("FAILED", "TERMINATED"):
+            print(f"Pod failed with status: {status}")
+            return False
+
+        print(f"  Status: {status}... waiting")
+        time.sleep(10)
+
+    print(f"Timeout waiting for pod")
+    return False
+
+
+def wait_for_training_complete(pod_id: str, timeout: int = 7200) -> bool:
+    """Wait for training to complete (checks for completion marker).
+
+    This is a simplified check - in practice you'd want SSH access
+    or a webhook to know when training is done.
+    """
+    print(f"Training in progress on pod {pod_id}...")
+    print(f"  (timeout: {timeout // 3600}h {(timeout % 3600) // 60}m)")
+    print(f"  Check RunPod dashboard for real-time logs")
+
+    start = time.time()
+    while time.time() - start < timeout:
+        pod = get_pod_status(pod_id)
+        status = pod.get("desiredStatus", "UNKNOWN")
+
+        if status in ("EXITED", "TERMINATED"):
+            # Pod finished (hopefully after training completed)
+            print("Pod finished execution")
+            return True
+        elif status == "FAILED":
+            print("Pod failed!")
+            return False
+
+        # Still running - training in progress
+        elapsed = int(time.time() - start)
+        print(f"  [{elapsed // 60}m] Still training... (status: {status})")
+        time.sleep(60)
+
+    print("Training timeout - pod may still be running")
+    return False
+
+
+def terminate_pod(pod_id: str) -> bool:
+    """Terminate a pod."""
+    print(f"Terminating pod {pod_id}...")
+    try:
+        runpod.terminate_pod(pod_id)
+        print("Pod terminated")
+        return True
+    except Exception as e:
+        print(f"Error terminating pod: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Main workflow
+# ---------------------------------------------------------------------------
+
+def run_training_job(
+    model: str,
+    dataset: str,
+    output_repo: str,
+    gpu: str = "rtx3090",
+    epochs: int = 3,
+    batch_size: int = 2,
+    min_pass_rate: float = 0.7,
+    wait: bool = True,
+    auto_terminate: bool = True,
+) -> dict:
+    """Run a complete training job on RunPod.
+
+    Returns:
+        Result dict with pod_id, status, etc.
+    """
+    # Resolve GPU type
+    gpu_type = GPU_OPTIONS.get(gpu.lower(), gpu)
+
+    # Create pod
+    pod = create_training_pod(
+        model=model,
+        dataset=dataset,
+        output_repo=output_repo,
+        gpu_type=gpu_type,
+        epochs=epochs,
+        batch_size=batch_size,
+        min_pass_rate=min_pass_rate,
+    )
+
+    pod_id = pod["id"]
+    result = {
+        "pod_id": pod_id,
+        "model": model,
+        "dataset": dataset,
+        "output_repo": output_repo,
+        "gpu": gpu_type,
+        "status": "CREATED",
+    }
+
+    if not wait:
+        print(f"\nPod created. Check status with:")
+        print(f"  python runpod_train.py --status --pod-id {pod_id}")
+        return result
+
+    # Wait for pod to be ready
+    if not wait_for_pod_ready(pod_id):
+        result["status"] = "FAILED_TO_START"
+        return result
+
+    # Wait for training to complete
+    result["status"] = "TRAINING"
+    success = wait_for_training_complete(pod_id)
+
+    if success:
+        result["status"] = "COMPLETED"
+        print(f"\n✓ Training complete!")
+        print(f"  Model: https://huggingface.co/{output_repo}")
+    else:
+        result["status"] = "TIMEOUT_OR_FAILED"
+
+    # Auto-terminate
+    if auto_terminate:
+        terminate_pod(pod_id)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run DPO training on RunPod",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    # Mode flags
+    parser.add_argument("--status", action="store_true", help="Check pod status")
+    parser.add_argument("--terminate", action="store_true", help="Terminate pod")
+    parser.add_argument("--list-gpus", action="store_true", help="List available GPU options")
+
+    # Pod ID (for status/terminate)
+    parser.add_argument("--pod-id", help="Pod ID for status/terminate operations")
+
+    # Training config
+    parser.add_argument(
+        "--model",
+        default="Qwen/Qwen2.5-1.5B-Instruct",
+        help="Base model to fine-tune",
+    )
+    parser.add_argument(
+        "--dataset",
+        default="patruff/chuckles-dpo",
+        help="DPO dataset on HuggingFace",
+    )
+    parser.add_argument(
+        "--output-repo",
+        help="HuggingFace repo for trained model (required for training)",
+    )
+    parser.add_argument(
+        "--gpu",
+        default="rtx3090",
+        help="GPU type (rtx3090, rtx4090, a40, l40, a100-40, a100-80)",
+    )
+    parser.add_argument("--epochs", type=int, default=3, help="Training epochs")
+    parser.add_argument("--batch-size", type=int, default=2, help="Batch size")
+    parser.add_argument(
+        "--min-pass-rate",
+        type=float,
+        default=0.7,
+        help="Minimum eval pass rate",
+    )
+
+    # Control flags
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Don't wait for training to complete",
+    )
+    parser.add_argument(
+        "--no-terminate",
+        action="store_true",
+        help="Don't auto-terminate pod after training",
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # Check for API key
+    api_key = os.environ.get("RUNPOD_API_KEY")
+    if not api_key:
+        print("ERROR: RUNPOD_API_KEY environment variable required")
+        print("Get your API key from: https://www.runpod.io/console/user/settings")
+        sys.exit(1)
+
+    runpod.api_key = api_key
+
+    # List GPUs
+    if args.list_gpus:
+        print("Available GPU options:")
+        for key, name in GPU_OPTIONS.items():
+            print(f"  {key:12} -> {name}")
+        return
+
+    # Check status
+    if args.status:
+        if not args.pod_id:
+            print("ERROR: --pod-id required for --status")
+            sys.exit(1)
+        pod = get_pod_status(args.pod_id)
+        print(json.dumps(pod, indent=2))
+        return
+
+    # Terminate
+    if args.terminate:
+        if not args.pod_id:
+            print("ERROR: --pod-id required for --terminate")
+            sys.exit(1)
+        terminate_pod(args.pod_id)
+        return
+
+    # Training mode - check required args
+    if not args.output_repo:
+        print("ERROR: --output-repo required for training")
+        print("Example: --output-repo your-username/parody-model")
+        sys.exit(1)
+
+    # Run training
+    result = run_training_job(
+        model=args.model,
+        dataset=args.dataset,
+        output_repo=args.output_repo,
+        gpu=args.gpu,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        min_pass_rate=args.min_pass_rate,
+        wait=not args.no_wait,
+        auto_terminate=not args.no_terminate,
+    )
+
+    # Output result
+    print("\n" + "=" * 60)
+    print("TRAINING JOB RESULT")
+    print("=" * 60)
+    print(json.dumps(result, indent=2))
+
+    if result["status"] == "COMPLETED":
+        sys.exit(0)
+    else:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

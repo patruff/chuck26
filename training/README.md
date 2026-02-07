@@ -351,3 +351,156 @@ export HF_TOKEN="your-token"
 | A40 + 7B | ~4 hours | $0.39/hr | **~$1.60** |
 
 **Most cost-effective**: RTX 3090 with Qwen2.5-1.5B for under $1 total.
+
+---
+
+## Automated Training with RunPod API
+
+Instead of manually creating pods, you can automate the entire workflow using the RunPod Python SDK.
+
+### Prerequisites
+
+1. Get your RunPod API key from [runpod.io/console/user/settings](https://www.runpod.io/console/user/settings)
+2. Get a HuggingFace token from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+
+### Local CLI Usage
+
+```bash
+# Install RunPod SDK
+pip install runpod
+
+# Set API keys
+export RUNPOD_API_KEY="your-runpod-key"
+export HF_TOKEN="your-hf-token"
+
+# Launch training (creates pod, runs training, pushes to HF, terminates pod)
+python runpod_train.py \
+    --model Qwen/Qwen2.5-1.5B-Instruct \
+    --dataset patruff/chuckles-dpo \
+    --output-repo your-username/parody-1.5b-dpo \
+    --gpu rtx3090 \
+    --epochs 3
+
+# Launch without waiting (returns pod ID immediately)
+python runpod_train.py \
+    --model Qwen/Qwen2.5-1.5B-Instruct \
+    --dataset patruff/chuckles-dpo \
+    --output-repo your-username/parody-1.5b-dpo \
+    --no-wait
+
+# Check pod status
+python runpod_train.py --status --pod-id abc123xyz
+
+# Terminate a pod
+python runpod_train.py --terminate --pod-id abc123xyz
+
+# List available GPU options
+python runpod_train.py --list-gpus
+```
+
+### GPU Options
+
+| Flag | GPU | Cost/hr | VRAM |
+|------|-----|---------|------|
+| `rtx3090` | RTX 3090 | ~$0.22 | 24GB |
+| `rtx4090` | RTX 4090 | ~$0.44 | 24GB |
+| `a40` | NVIDIA A40 | ~$0.39 | 48GB |
+| `l40` | NVIDIA L40 | ~$0.49 | 48GB |
+| `a100-40` | A100 40GB | ~$1.09 | 40GB |
+| `a100-80` | A100 80GB | ~$1.69 | 80GB |
+
+---
+
+## GitHub Actions Automation
+
+The repository includes a GitHub Actions workflow for fully automated training.
+
+### Setup
+
+1. Add these secrets to your GitHub repository (Settings → Secrets → Actions):
+   - `RUNPOD_API_KEY`: Your RunPod API key
+   - `HF_TOKEN`: Your HuggingFace token with write access
+
+### Running Training via GitHub Actions
+
+1. Go to **Actions** → **Train on RunPod**
+2. Click **Run workflow**
+3. Fill in the parameters:
+   - **Model**: Base model to fine-tune
+   - **Dataset**: DPO dataset on HuggingFace
+   - **Output Repo**: Where to push the trained model (e.g., `your-username/parody-model`)
+   - **GPU**: GPU type (rtx3090 is cheapest)
+   - **Epochs**: Training epochs (3 recommended)
+   - **Min Pass Rate**: Evaluation threshold (0.7 = 70%)
+
+4. Click **Run workflow**
+
+The workflow will:
+1. Launch a RunPod pod with the selected GPU
+2. Clone the repo and install dependencies
+3. Run DPO training
+4. Evaluate the model
+5. Push to HuggingFace Hub
+6. Terminate the pod
+7. Show results in the job summary
+
+### Workflow Parameters
+
+```yaml
+inputs:
+  model:        # Base model (default: Qwen/Qwen2.5-1.5B-Instruct)
+  dataset:      # DPO dataset (default: patruff/chuckles-dpo)
+  output_repo:  # HuggingFace repo for output (REQUIRED)
+  gpu:          # GPU type (default: rtx3090)
+  epochs:       # Training epochs (default: 3)
+  batch_size:   # Batch size (default: 2)
+  min_pass_rate: # Eval threshold (default: 0.7)
+  wait_for_completion: # Wait for training (default: true)
+```
+
+### Sample Workflow Run
+
+```
+## Training Job Summary
+
+| Parameter | Value |
+|-----------|-------|
+| Model | `Qwen/Qwen2.5-1.5B-Instruct` |
+| Dataset | `patruff/chuckles-dpo` |
+| Output Repo | [your-username/parody-1.5b](https://huggingface.co/your-username/parody-1.5b) |
+| GPU | `rtx3090` |
+| Epochs | 3 |
+| Pod ID | `abc123xyz` |
+
+✅ **Training completed successfully!**
+
+View model: https://huggingface.co/your-username/parody-1.5b
+```
+
+---
+
+## End-to-End Automated Pipeline
+
+Here's the complete automated workflow:
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Generate DPO   │───▶│  Train Model    │───▶│  Evaluate &     │
+│  Dataset        │    │  on RunPod      │    │  Push to HF     │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+       │                       │                       │
+       ▼                       ▼                       ▼
+  Review CSVs            GitHub Action           Model ready
+  via Drive app          triggers RunPod         on HuggingFace
+```
+
+### Step-by-Step
+
+1. **Generate parodies for review** (via Drive app or PR workflow)
+2. **Review and approve/reject** parodies in CSVs
+3. **Process reviews into DPO dataset** (uploads to HuggingFace)
+4. **Trigger training workflow** (GitHub Actions → RunPod)
+5. **Model is trained, evaluated, and pushed** to HuggingFace
+6. **Use the model** for parody generation
+
+All of this can run without any manual SSH or pod management!
