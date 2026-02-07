@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 from pathlib import Path
 
 import torch
@@ -37,6 +38,8 @@ from transformers import (
     TrainingArguments,
 )
 from trl import DPOConfig, DPOTrainer
+
+from training_report import TrainingReport, generate_comparison_examples
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,26 +95,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lora-r",
         type=int,
-        default=16,
-        help="LoRA rank",
+        default=32,
+        help="LoRA rank (higher=more capacity for creative tasks, 32-64 recommended for humor)",
     )
     parser.add_argument(
         "--lora-alpha",
         type=int,
-        default=32,
-        help="LoRA alpha",
+        default=64,
+        help="LoRA alpha (best practice: 2x rank for stable training)",
     )
     parser.add_argument(
         "--lora-dropout",
         type=float,
-        default=0.05,
-        help="LoRA dropout",
+        default=0.1,
+        help="LoRA dropout (10%% recommended for <13B models, 5%% for larger)",
     )
     parser.add_argument(
         "--beta",
         type=float,
-        default=0.1,
-        help="DPO beta parameter (higher = more conservative)",
+        default=0.05,
+        help="DPO beta (lower=more aggressive preference learning, 0.05 good for humor)",
+    )
+    parser.add_argument(
+        "--target-all-layers",
+        action="store_true",
+        default=True,
+        help="Target all attention+MLP layers (best for creative tasks)",
     )
     parser.add_argument(
         "--use-4bit",
@@ -143,6 +152,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable Weights & Biases logging",
     )
+    parser.add_argument(
+        "--generate-report",
+        action="store_true",
+        help="Generate comprehensive training report with comparisons",
+    )
+    parser.add_argument(
+        "--report-examples",
+        type=int,
+        default=5,
+        help="Number of comparison examples in report",
+    )
+    parser.add_argument(
+        "--gpu-type",
+        default="",
+        help="GPU type for cost estimation (e.g., rtx3090, a100-40)",
+    )
     return parser.parse_args()
 
 
@@ -172,6 +197,29 @@ def format_dpo_example(example: dict) -> dict:
 def main():
     args = parse_args()
 
+    # Initialize report
+    report = TrainingReport(
+        base_model=args.model,
+        output_model=args.output,
+        dataset=args.dataset,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        use_4bit=args.use_4bit,
+        use_8bit=args.use_8bit,
+    )
+
+    # Start timing
+    start_time = time.time()
+
+    report.add_log("Training parody model with DPO")
+    report.add_log(f"Base model: {args.model}")
+    report.add_log(f"Dataset: {args.dataset}")
+    report.add_log(f"Output: {args.output}")
+    report.add_log(f"Epochs: {args.epochs}")
+
     print(f"Training parody model with DPO")
     print(f"  Base model: {args.model}")
     print(f"  Dataset: {args.dataset}")
@@ -183,8 +231,12 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     if device == "cuda":
-        print(f"  GPU: {torch.cuda.get_device_name()}")
-        print(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        gpu_name = torch.cuda.get_device_name()
+        vram = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"  GPU: {gpu_name}")
+        print(f"  VRAM: {vram:.1f} GB")
+        report.gpu_type = args.gpu_type if args.gpu_type else gpu_name
+        report.add_log(f"GPU: {gpu_name} ({vram:.1f} GB)")
     print()
 
     # Load tokenizer
@@ -219,21 +271,51 @@ def main():
         attn_implementation="flash_attention_2" if torch.cuda.is_available() else None,
     )
 
-    # LoRA config
-    print("Applying LoRA...")
+    # LoRA config - optimized for creative/humor tasks
+    # Research shows targeting all attention + MLP layers works best for creative output
+    # Higher rank (32-64) gives more capacity for nuanced humor patterns
+    # Alpha = 2 * rank is the recommended ratio for stable training
+    print("Applying LoRA (optimized for humor/creativity)...")
+    report.add_log(f"LoRA config: r={args.lora_r}, alpha={args.lora_alpha}, dropout={args.lora_dropout}")
+
+    # Target modules for different model architectures
+    # Attention layers: capture context and relationships (important for wordplay)
+    # MLP/FFN layers: capture creative patterns and vocabulary (critical for humor)
+    target_modules = [
+        # Attention layers
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        # MLP/FFN layers - critical for creative output
+        "gate_proj", "up_proj", "down_proj",
+    ]
+
+    # For models that support it, also target embeddings for better wordplay
+    if args.target_all_layers:
+        # Some models use different names - include common variants
+        target_modules.extend([
+            "embed_tokens",  # Input embeddings (helps with vocabulary)
+            "lm_head",       # Output head (helps with generation)
+            # Alternative names used by some models
+            "dense", "fc1", "fc2",
+        ])
+
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules=target_modules,
         bias="none",
+        # modules_to_save helps with better creative output
+        modules_to_save=["lm_head"] if args.target_all_layers else None,
     )
 
     # Load dataset
     print(f"Loading dataset: {args.dataset}")
+    report.add_log(f"Loading dataset: {args.dataset}")
     dataset = load_dataset(args.dataset, split="train")
     print(f"  {len(dataset)} examples")
+    report.dataset_size = len(dataset)
+    report.add_log(f"Dataset loaded: {len(dataset)} examples")
 
     # Format for DPO
     print("Formatting dataset for DPO...")
@@ -293,22 +375,105 @@ def main():
     print("\n" + "=" * 60)
     print("Starting training...")
     print("=" * 60 + "\n")
+    report.add_log("Starting training...")
 
     trainer.train()
+    report.add_log("Training complete")
+
+    # Record end time
+    end_time = time.time()
+    report.set_timing(start_time, end_time)
+    report.calculate_cost()
+    report.add_log(f"Duration: {report.training_duration_human}")
+    report.add_log(f"Estimated cost: ${report.estimated_cost:.2f}")
 
     # Save
     print(f"\nSaving model to {output_dir}")
+    report.add_log(f"Saving model to {output_dir}")
     trainer.save_model()
     tokenizer.save_pretrained(output_dir)
 
     # Push to hub
+    hub_id = None
     if args.push_to_hub:
         hub_id = args.hub_model_id or f"parody-{Path(args.model).name}-dpo"
         print(f"Pushing to HuggingFace Hub: {hub_id}")
+        report.add_log(f"Pushing to HuggingFace Hub: {hub_id}")
         trainer.push_to_hub()
+        report.huggingface_url = f"https://huggingface.co/{hub_id}"
+        report.output_model = hub_id
+
+    # Generate training report
+    if args.generate_report:
+        print("\n" + "=" * 60)
+        print("Generating training report...")
+        print("=" * 60)
+        report.add_log("Generating training report with comparisons")
+
+        # Generate comparison examples (base vs fine-tuned)
+        try:
+            # Free up memory from training
+            del trainer, model
+            torch.cuda.empty_cache()
+
+            report.comparison_examples = generate_comparison_examples(
+                base_model_path=args.model,
+                finetuned_model_path=str(output_dir),
+                num_examples=args.report_examples,
+            )
+            report.add_log(f"Generated {len(report.comparison_examples)} comparison examples")
+        except Exception as e:
+            report.add_log(f"Warning: Could not generate comparisons: {e}")
+
+        # Run evaluation for report
+        try:
+            from evaluate_parodies import evaluate_model, DEFAULT_TEST_TITLES
+
+            print("\nRunning evaluation for report...")
+            report.add_log("Running evaluation...")
+            eval_results = evaluate_model(
+                str(output_dir),
+                titles=DEFAULT_TEST_TITLES[:15],
+                use_4bit=args.use_4bit,
+            )
+            report.eval_total = eval_results.total
+            report.eval_passed = eval_results.passed
+            report.eval_pass_rate = eval_results.pass_rate
+            report.eval_avg_score = eval_results.avg_phonetic_score
+            report.add_log(f"Evaluation: {eval_results.passed}/{eval_results.total} passed ({eval_results.pass_rate:.1%})")
+        except Exception as e:
+            report.add_log(f"Warning: Could not run evaluation: {e}")
+
+        # Save reports
+        report_json = output_dir / "training-report.json"
+        report_md = output_dir / "training-report.md"
+        report.save(report_json)
+        report.save_markdown(report_md)
+        report.print_summary()
+
+        # Upload report to hub
+        if args.push_to_hub and hub_id:
+            try:
+                from huggingface_hub import HfApi
+                api = HfApi()
+                api.upload_file(
+                    path_or_fileobj=str(report_json),
+                    path_in_repo="training-report.json",
+                    repo_id=hub_id,
+                )
+                api.upload_file(
+                    path_or_fileobj=str(report_md),
+                    path_in_repo="training-report.md",
+                    repo_id=hub_id,
+                )
+                report.add_log(f"Uploaded reports to {hub_id}")
+            except Exception as e:
+                report.add_log(f"Warning: Could not upload reports: {e}")
 
     print("\nTraining complete!")
     print(f"Model saved to: {output_dir}")
+    if hub_id:
+        print(f"HuggingFace: https://huggingface.co/{hub_id}")
 
 
 if __name__ == "__main__":

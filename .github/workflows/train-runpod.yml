@@ -135,8 +135,8 @@ jobs:
         fi
 
 
-  # Optional: Run evaluation after training completes
-  evaluate:
+  # Download training report and display results
+  report:
     needs: launch-training
     if: inputs.wait_for_completion == true
     runs-on: ubuntu-latest
@@ -152,24 +152,48 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install transformers torch huggingface-hub pronouncing
+        pip install huggingface-hub
 
-    - name: Download and evaluate model
+    - name: Download training report
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        echo "Downloading trained model for local evaluation..."
-        huggingface-cli download ${{ inputs.output_repo }} --local-dir ./trained-model
+        echo "Downloading training report from HuggingFace..."
+        huggingface-cli download ${{ inputs.output_repo }} training-report.md --local-dir ./reports || true
+        huggingface-cli download ${{ inputs.output_repo }} training-report.json --local-dir ./reports || true
 
-        echo "Running evaluation..."
-        python training/evaluate_parodies.py \
-          --model ./trained-model \
-          --output eval-report.json \
-          --min-pass-rate ${{ inputs.min_pass_rate }} || true
+    - name: Display Training Report
+      run: |
+        echo "# Training Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
 
-        echo "## Evaluation Results" >> $GITHUB_STEP_SUMMARY
-        if [ -f eval-report.json ]; then
-          cat eval-report.json >> $GITHUB_STEP_SUMMARY
+        if [ -f "./reports/training-report.md" ]; then
+          # Display the markdown report (skip the header since we added one)
+          tail -n +3 ./reports/training-report.md >> $GITHUB_STEP_SUMMARY
         else
-          echo "Evaluation report not generated" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Training report not found on HuggingFace yet." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The report may still be uploading. Check the model page:" >> $GITHUB_STEP_SUMMARY
+          echo "https://huggingface.co/${{ inputs.output_repo }}" >> $GITHUB_STEP_SUMMARY
         fi
+
+    - name: Upload report artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: training-report
+        path: |
+          ./reports/training-report.md
+          ./reports/training-report.json
+        if-no-files-found: ignore
+
+    - name: Summary Links
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Links" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- 🤗 [Model on HuggingFace](https://huggingface.co/${{ inputs.output_repo }})" >> $GITHUB_STEP_SUMMARY
+        echo "- 📊 [Training Report](https://huggingface.co/${{ inputs.output_repo }}/blob/main/training-report.md)" >> $GITHUB_STEP_SUMMARY
+        echo "- 📋 [Report JSON](https://huggingface.co/${{ inputs.output_repo }}/blob/main/training-report.json)" >> $GITHUB_STEP_SUMMARY
