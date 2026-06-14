@@ -19,6 +19,7 @@ Dataset format: JSONL, one object per line, with a "text" field (plain SFT) OR a
 Requires env HF_TOKEN for the push.
 """
 import argparse
+import inspect
 import os
 
 import torch
@@ -53,33 +54,49 @@ def parse_args():
         help="Comma-separated module names to apply LoRA to",
     )
     p.add_argument("--private", action="store_true", help="Push the adapter repo as private")
+    p.add_argument("--no-4bit", action="store_true", help="Disable QLoRA 4-bit loading for local CPU/tiny-model smoke tests")
+    p.add_argument("--fp32", action="store_true", help="Use float32 instead of bf16 for local CPU smoke tests")
+    p.add_argument("--no-push", action="store_true", help="Save the adapter locally without pushing to Hugging Face")
+    p.add_argument("--no-packing", action="store_true", help="Disable sequence packing for tiny smoke-test datasets")
     return p.parse_args()
+
+
+def build_sft_config(**kwargs):
+    """Build SFTConfig across TRL versions with small argument-name drift."""
+    params = inspect.signature(SFTConfig).parameters
+    if "max_seq_length" not in params and "max_length" in params and "max_seq_length" in kwargs:
+        kwargs["max_length"] = kwargs.pop("max_seq_length")
+    filtered = {k: v for k, v in kwargs.items() if k in params}
+    return SFTConfig(**filtered)
 
 
 def main():
     args = parse_args()
-    if not os.environ.get("HF_TOKEN"):
+    if not args.no_push and not os.environ.get("HF_TOKEN"):
         raise SystemExit("HF_TOKEN env var is required to push the adapter. Pass it into the pod env.")
 
-    # 4-bit (QLoRA) base — big memory savings, fits 7-13B on a single A100/4090.
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
+    dtype = torch.float32 if args.fp32 else torch.bfloat16
 
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.base_model,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-    )
-    model = prepare_model_for_kbit_training(model)
+    model_kwargs = {"torch_dtype": dtype}
+    if not args.no_4bit:
+        # 4-bit (QLoRA) base — big memory savings, fits 7-13B on a single A100/4090.
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model_kwargs["device_map"] = "auto"
+    elif torch.cuda.is_available():
+        model_kwargs["device_map"] = "auto"
+
+    model = AutoModelForCausalLM.from_pretrained(args.base_model, **model_kwargs)
+    if not args.no_4bit:
+        model = prepare_model_for_kbit_training(model)
 
     lora_config = LoraConfig(
         r=args.lora_r,
@@ -103,23 +120,24 @@ def main():
     if "messages" in ds.column_names:
         ds = ds.map(to_text)
 
-    sft_config = SFTConfig(
+    sft_config = build_sft_config(
         output_dir=args.output,
         num_train_epochs=args.epochs,
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
-        bf16=True,
+        bf16=not args.fp32,
+        fp16=False,
         logging_steps=10,
         save_strategy="epoch",
         max_seq_length=args.max_seq_len,
-        packing=True,
+        packing=not args.no_packing,
         dataset_text_field="text",
         report_to="none",
         # Push the ADAPTER ONLY (PEFT model => push_to_hub uploads adapter weights).
-        push_to_hub=True,
-        hub_model_id=args.hf_repo,
+        push_to_hub=not args.no_push,
+        hub_model_id=None if args.no_push else args.hf_repo,
         hub_private_repo=args.private,
     )
 
@@ -132,6 +150,12 @@ def main():
     )
 
     trainer.train()
+
+    if args.no_push:
+        trainer.save_model(args.output)
+        tokenizer.save_pretrained(args.output)
+        print(f"\nAdapter saved locally to {args.output}")
+        return
 
     # Final explicit push so the adapter + tokenizer land on the Hub even if
     # save_strategy didn't trigger a hub sync on the last step.

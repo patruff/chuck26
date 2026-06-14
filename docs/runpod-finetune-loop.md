@@ -39,6 +39,81 @@ The goal of the first run is **to prove the pipes connect**, not to train a good
 model. So we pick an ungated 7B base, a cheap 24 GB GPU, and cap training at a
 handful of steps.
 
+## Local smoke test — no pod, no push, no GPU spend
+
+Before renting a GPU, run the same train/infer/evaluate shape against a tiny
+model and toy dataset. This only proves that dataset loading, LoRA training,
+adapter loading, and assertions are wired correctly. It does **not** prove model
+quality.
+
+```bash
+python3 -m venv .venv-smoke
+source .venv-smoke/bin/activate
+pip install --upgrade pip
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install "transformers>=4.44" peft trl datasets accelerate
+
+mkdir -p data out/local-smoke
+cat > data/local_smoke_train.jsonl <<'JSONL'
+{"text":"### Instruction:\nSay the chuckles smoke keyword.\n\n### Response:\nCHUCKLES_SMOKE_OK\n"}
+{"text":"### Instruction:\nReturn the training status as JSON.\n\n### Response:\n{\"status\":\"adapter_loaded\",\"suite\":\"chuckles_smoke\"}\n"}
+JSONL
+
+cat > data/local_smoke_evals.json <<'JSON'
+[
+  {
+    "prompt": "### Instruction:\nSay the chuckles smoke keyword.\n\n### Response:\n",
+    "expect_nonempty": true,
+    "min_chars": 2
+  },
+  {
+    "prompt": "### Instruction:\nReturn the training status as JSON.\n\n### Response:\n",
+    "expect_nonempty": true,
+    "min_chars": 2
+  }
+]
+JSON
+
+python skills/runpod-finetune-loop/scripts/train_lora.py \
+  --base-model sshleifer/tiny-gpt2 \
+  --dataset data/local_smoke_train.jsonl \
+  --hf-repo local/smoke-adapter \
+  --output out/local-smoke \
+  --target-modules c_attn,c_proj \
+  --max-steps 100 \
+  --lr 0.01 \
+  --batch-size 1 \
+  --grad-accum 1 \
+  --max-seq-len 128 \
+  --lora-r 4 \
+  --lora-alpha 8 \
+  --no-4bit \
+  --fp32 \
+  --no-push \
+  --no-packing
+
+python skills/runpod-finetune-loop/scripts/test_inference.py \
+  --hf-repo out/local-smoke \
+  --evals data/local_smoke_evals.json \
+  --max-new-tokens 16 \
+  --fp32
+
+python skills/runpod-finetune-loop/scripts/eval_adapter_loss.py \
+  --base-model sshleifer/tiny-gpt2 \
+  --adapter out/local-smoke \
+  --dataset data/local_smoke_train.jsonl \
+  --max-length 128 \
+  --fp32 \
+  --min-improvement 0.001
+```
+
+Expected result: training writes adapter files into `out/local-smoke`, inference
+loads that adapter back from disk, and the eval script reports checked prompts
+passing. The loss eval should show `adapter_loss` lower than `base_loss` by at
+least `0.001`. If generated text is nonsense, that is okay for this tiny model;
+this test is for plumbing and a basic learning signal, not product-quality
+generation.
+
 | Choice | Value | Why |
 |---|---|---|
 | Base model | `Qwen/Qwen2.5-7B` | Apache-2.0, **ungated** — no license-acceptance friction for `HF_TOKEN` |

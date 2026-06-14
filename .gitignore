@@ -9,4 +9,6 @@ build/
 *.safetensors
 /out/
 /data/*.jsonl
+/data/*.json
 .headroom/
+.venv*/

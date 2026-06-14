@@ -36,12 +36,13 @@ def parse_args():
     p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--load-4bit", action="store_true",
                    help="Load the base in 4-bit (match QLoRA training for consistency)")
+    p.add_argument("--fp32", action="store_true", help="Load in float32 for local CPU smoke tests")
     p.add_argument("--temperature", type=float, default=0.0)
     return p.parse_args()
 
 
-def load_model(repo, load_4bit):
-    kwargs = {"device_map": "auto", "torch_dtype": torch.bfloat16}
+def load_model(repo, load_4bit, fp32):
+    kwargs = {"torch_dtype": torch.float32 if fp32 else torch.bfloat16}
     if load_4bit:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -50,6 +51,9 @@ def load_model(repo, load_4bit):
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
+        kwargs["device_map"] = "auto"
+    elif torch.cuda.is_available():
+        kwargs["device_map"] = "auto"
     model = AutoPeftModelForCausalLM.from_pretrained(repo, **kwargs)
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(repo)
@@ -75,6 +79,11 @@ def generate(model, tokenizer, prompt, max_new_tokens, temperature):
 
 def check(text, item):
     failures = []
+    if item.get("expect_nonempty") and not text.strip():
+        failures.append("output is empty")
+    min_chars = item.get("min_chars")
+    if min_chars is not None and len(text.strip()) < int(min_chars):
+        failures.append(f"output shorter than {min_chars} chars")
     for needle in item.get("expect_contains", []):
         if needle.lower() not in text.lower():
             failures.append(f"missing substring: {needle!r}")
@@ -90,7 +99,7 @@ def main():
         evals = json.load(f)
 
     print(f"Loading adapter {args.hf_repo} (base resolved from adapter_config.json)...")
-    model, tokenizer = load_model(args.hf_repo, args.load_4bit)
+    model, tokenizer = load_model(args.hf_repo, args.load_4bit, args.fp32)
 
     passed = 0
     has_checks = 0
@@ -99,7 +108,7 @@ def main():
         print(f"\n--- eval {i} ---")
         print(f"PROMPT: {item['prompt']}")
         print(f"OUTPUT: {out}")
-        if "expect_contains" in item or "expect_regex" in item:
+        if any(k in item for k in ("expect_contains", "expect_regex", "expect_nonempty", "min_chars")):
             has_checks += 1
             fails = check(out, item)
             if fails:
