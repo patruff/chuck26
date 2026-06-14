@@ -1,0 +1,13 @@
+[
+  {
+    "prompt": "### Instruction:\nClassify the sentiment of this review as positive or negative.\n\n### Input:\nThe wallet connection flow was smooth and the ride booking just worked.\n\n### Response:\n",
+    "expect_contains": ["positive"]
+  },
+  {
+    "prompt": "### Instruction:\nReturn the booking status as JSON with a 'status' field.\n\n### Input:\nDriver assigned, ETA 4 minutes.\n\n### Response:\n",
+    "expect_regex": "\"status\"\\s*:"
+  },
+  {
+    "prompt": "### Instruction:\nSummarize in one sentence.\n\n### Input:\nThe agent provisioned a GPU, trained an adapter, pushed it to the Hub, and tore the pod down.\n\n### Response:\n"
+  }
+]
