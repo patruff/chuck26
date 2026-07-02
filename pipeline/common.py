@@ -15,15 +15,28 @@ import re
 import string
 from typing import Any
 
-REASONING_SYSTEM_PROMPT = (
-    "You are a comedy writer who creates funny parody titles. "
-    "Replace words with phonetically similar but humorous alternatives. "
-    "Think through the phonetic suggestions step by step inside <think> tags, "
-    "then answer with ONLY the final parody title."
-)
-
 # Threshold used both in reasoning traces and inference-time scoring.
 MIN_PHONETIC_SCORE = 0.6
+
+REASONING_SYSTEM_PROMPT = f"""You are a comedy writer who creates funny parody titles that sound almost identical to the original when spoken aloud but mean something absurd.
+
+SETUP -- two phonetic tools support you:
+- parody_word_suggester: already ran on every word of the title; its ranked funny replacements (with phonetic similarity 0-1) are listed in the user prompt.
+- word_phonetic_analyzer(word=<original>, compare_to=<replacement>): returns a phonetic similarity score 0-1. A swap is phonetically sound when similarity >= {MIN_PHONETIC_SCORE}.
+
+METHOD -- reason inside <think> tags, then answer with ONLY the final parody title:
+1. Shortlist the funniest candidates from the parody_word_suggester output.
+2. Verify every swap you consider with word_phonetic_analyzer and cite its score.
+3. Prefer swaps scoring >= {MIN_PHONETIC_SCORE}. Swap only 1-2 words and keep the rest of the title intact so the original is still recognizable.
+
+EXAMPLE:
+User: Create a phonetically-sound parody of: 'Jurassic Park' (parody_word_suggester: park -> pork 0.85, bark 0.78)
+Assistant: <think>
+parody_word_suggester's top pick for "park" is "pork" (0.85).
+word_phonetic_analyzer(word="park", compare_to="pork") -> similarity 0.85 -- well above {MIN_PHONETIC_SCORE}, and dinosaur pork is absurd.
+Keep "Jurassic" unchanged to anchor the original sound.
+</think>
+Jurassic Pork"""
 
 
 def compact_suggestions(
@@ -68,11 +81,12 @@ def build_user_prompt(title: str, suggestions: dict[str, Any]) -> str:
     suggestions_json = json.dumps(suggestions, indent=2)
     return f"""Create a phonetically-sound parody of: '{title}'
 
-PHONETIC SUGGESTIONS (from the parody word suggester tool, per word):
+parody_word_suggester output (ranked funny replacements per word, with phonetic similarity):
 {suggestions_json}
 
-Pick replacements from the suggestions above (similarity >= {MIN_PHONETIC_SCORE} is acceptable),
-keep the rest of the title intact, and answer with only the parody title."""
+Pick replacements from the suggestions above, verify each swap with
+word_phonetic_analyzer (similarity >= {MIN_PHONETIC_SCORE} is acceptable), keep the rest of
+the title intact, and answer with only the parody title."""
 
 
 def clean_word(word: str) -> str:
@@ -220,7 +234,7 @@ def build_reasoning_trace(
             top = ", ".join(
                 f"{c['word']} ({c['similarity']})" for c in cands[:4]
             )
-            lines.append(f'Suggestions for "{word_c}": {top}.')
+            lines.append(f'parody_word_suggester found for "{word_c}": {top}.')
         elif word_c not in swapped_words:
             lines.append(
                 f'No strong suggestions for "{word_c}" -- keeping it anchors '
@@ -231,13 +245,13 @@ def build_reasoning_trace(
         score = swap_scores.get(f"{ow}->{pw}")
         if score is not None:
             verdict = (
-                "above the threshold, the swap holds up"
+                f"above the {MIN_PHONETIC_SCORE} threshold, the swap holds up"
                 if score >= MIN_PHONETIC_SCORE
                 else "below the usual threshold, but the humor carries it"
             )
             lines.append(
-                f'Verifying "{ow}" -> "{pw}" with the phonetic analyzer: '
-                f"similarity {score} -- {verdict}."
+                f'word_phonetic_analyzer(word="{ow}", compare_to="{pw}") '
+                f"-> similarity {score} -- {verdict}."
             )
         elif ow[1:] == pw[1:]:
             lines.append(

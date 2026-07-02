@@ -61,6 +61,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=0, help="Max titles (0 = all).")
     p.add_argument("--output", default="", help="Write results JSONL here.")
     p.add_argument("--max-new-tokens", type=int, default=1024)
+    p.add_argument(
+        "--temperature",
+        type=float,
+        default=0.4,
+        help="Sampling temperature; 0 = greedy decoding.",
+    )
     p.add_argument("--no-4bit", action="store_true")
     p.add_argument(
         "--funny-words",
@@ -110,7 +116,9 @@ def load_model(args):
     return model, tokenizer
 
 
-def generate_one(model, tokenizer, title: str, suggestions, max_new_tokens: int) -> str:
+def generate_one(
+    model, tokenizer, title: str, suggestions, max_new_tokens: int, temperature: float
+) -> str:
     import torch
 
     messages = [
@@ -127,13 +135,16 @@ def generate_one(model, tokenizer, title: str, suggestions, max_new_tokens: int)
             messages, tokenize=False, add_generation_prompt=True
         )
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    sampling = (
+        {"do_sample": True, "temperature": temperature, "top_p": 0.9}
+        if temperature > 0
+        else {"do_sample": False}
+    )
     with torch.no_grad():
         out = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
+            **sampling,
             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
         )
     return tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
@@ -164,7 +175,8 @@ def main() -> None:
             raw_sugg = pre_compute_suggestions(title, funny_words, parody_tool)
             suggestions = compact_suggestions(raw_sugg)
             generated = generate_one(
-                model, tokenizer, title, suggestions, args.max_new_tokens
+                model, tokenizer, title, suggestions,
+                args.max_new_tokens, args.temperature,
             )
             reasoning, parody = split_think_answer(generated)
             # The answer should be a single title line
