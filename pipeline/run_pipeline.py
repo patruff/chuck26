@@ -43,7 +43,11 @@ PIP_DEPS = [
 ]
 
 DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
-DEFAULT_GPU = "NVIDIA GeForce RTX 4090"
+# Tried in order until one schedules; all fit an 8B QLoRA run.
+DEFAULT_GPU = (
+    "NVIDIA GeForce RTX 4090,NVIDIA RTX A5000,NVIDIA RTX A6000,"
+    "NVIDIA A40,NVIDIA A100 80GB PCIe"
+)
 REPO_URL = "https://github.com/patruff/chuck26.git"
 
 
@@ -54,12 +58,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--adapter-repo", default="patruff/chuckles-reasoning-adapter")
     p.add_argument("--epochs", default="3")
     p.add_argument("--git-ref", default="main", help="Branch/tag the pod checks out.")
-    p.add_argument("--gpu", default=DEFAULT_GPU, help="RunPod GPU type id.")
+    p.add_argument(
+        "--gpu",
+        default=DEFAULT_GPU,
+        help="RunPod GPU type id(s), comma-separated fallback order.",
+    )
     p.add_argument("--gpu-count", type=int, default=1)
     p.add_argument("--cloud", default="COMMUNITY", choices=["COMMUNITY", "SECURE"])
     p.add_argument("--image", default=DEFAULT_IMAGE)
-    p.add_argument("--disk-gb", type=int, default=80)
-    p.add_argument("--volume-gb", type=int, default=80)
+    p.add_argument("--disk-gb", type=int, default=0, help="0 = auto (40 test / 100 full).")
+    p.add_argument(
+        "--volume-gb",
+        type=int,
+        default=0,
+        help="Network volume size. Default 0 (none) -- outputs go to the HF "
+        "Hub, and volume-less pods schedule far more reliably.",
+    )
     p.add_argument(
         "--test",
         action="store_true",
@@ -197,6 +211,7 @@ def main() -> None:
     if args.test:
         args.adapter_repo = args.adapter_repo.rstrip("/") + "-test"
     timeout_mins = args.timeout_mins or (60 if args.test else 240)
+    disk_gb = args.disk_gb or (40 if args.test else 100)
 
     api = HfApi(token=hf_token)
     start = dt.datetime.now(dt.timezone.utc)
@@ -206,34 +221,49 @@ def main() -> None:
         f"/tmp/boot && bash /tmp/boot/pipeline/pod_bootstrap.sh'"
     )
     pod_name = f"chuckles-reasoning-{'test' if args.test else 'sft'}"
-
-    print(f"Creating pod ({args.gpu}, {args.cloud}, test={args.test}) ...")
-    pod = runpod.create_pod(
+    pod_env = {
+        "HF_TOKEN": hf_token,
+        "REPO_URL": REPO_URL,
+        "GIT_REF": args.git_ref,
+        "BASE_MODEL": args.base_model,
+        "DATASET_REPO": args.dataset_repo,
+        "ADAPTER_REPO": args.adapter_repo,
+        "EPOCHS": str(args.epochs),
+        "TEST_MODE": "true" if args.test else "false",
+        "RUN_INFERENCE": "false" if args.no_inference else "true",
+        "INFER_TITLES": args.infer_titles,
+        **({"INFER_LIMIT": str(args.infer_limit)} if args.infer_limit else {}),
+    }
+    pod_kwargs = dict(
         name=pod_name,
         image_name=args.image,
-        gpu_type_id=args.gpu,
         gpu_count=args.gpu_count,
         cloud_type=args.cloud,
-        container_disk_in_gb=args.disk_gb,
-        volume_in_gb=args.volume_gb,
-        volume_mount_path="/workspace",
+        container_disk_in_gb=disk_gb,
         support_public_ip=True,
         ports="22/tcp",
         docker_args=docker_cmd,
-        env={
-            "HF_TOKEN": hf_token,
-            "REPO_URL": REPO_URL,
-            "GIT_REF": args.git_ref,
-            "BASE_MODEL": args.base_model,
-            "DATASET_REPO": args.dataset_repo,
-            "ADAPTER_REPO": args.adapter_repo,
-            "EPOCHS": str(args.epochs),
-            "TEST_MODE": "true" if args.test else "false",
-            "RUN_INFERENCE": "false" if args.no_inference else "true",
-            "INFER_TITLES": args.infer_titles,
-            **({"INFER_LIMIT": str(args.infer_limit)} if args.infer_limit else {}),
-        },
+        env=pod_env,
     )
+    if args.volume_gb > 0:
+        pod_kwargs["volume_in_gb"] = args.volume_gb
+        pod_kwargs["volume_mount_path"] = "/workspace"
+
+    pod = None
+    gpu_types = [g.strip() for g in args.gpu.split(",") if g.strip()]
+    for gpu_type in gpu_types:
+        print(f"Creating pod ({gpu_type}, {args.cloud}, disk {disk_gb}GB, "
+              f"test={args.test}) ...")
+        try:
+            pod = runpod.create_pod(gpu_type_id=gpu_type, **pod_kwargs)
+            break
+        except Exception as e:
+            print(f"  could not schedule on {gpu_type}: {e}")
+    if pod is None:
+        raise SystemExit(
+            f"No pod could be scheduled on any of: {', '.join(gpu_types)}. "
+            "Try again later, a different --gpu list, or --cloud SECURE."
+        )
     pod_id = pod["id"]
     cost_per_hr = pod.get("costPerHr")
     if cost_per_hr:
