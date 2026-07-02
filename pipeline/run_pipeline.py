@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dataset-repo", default="patruff/chuckles-reasoning-sft")
     p.add_argument("--adapter-repo", default="patruff/chuckles-reasoning-adapter")
     p.add_argument("--epochs", default="3")
+    p.add_argument(
+        "--max-steps",
+        default="0",
+        help="Cap training steps (0 = train by epochs). ~120 steps of a "
+        "1.7B model is a quick ~15-minute run.",
+    )
     p.add_argument("--git-ref", default="main", help="Branch/tag the pod checks out.")
     p.add_argument(
         "--gpu",
@@ -252,6 +258,7 @@ def main() -> None:
         "DATASET_REPO": args.dataset_repo,
         "ADAPTER_REPO": args.adapter_repo,
         "EPOCHS": str(args.epochs),
+        "MAX_STEPS": str(args.max_steps),
         "TEST_MODE": "true" if args.test else "false",
         "RUN_INFERENCE": "false" if args.no_inference else "true",
         "RUN_ID": run_id,

@@ -23,6 +23,7 @@ BASE_MODEL="${BASE_MODEL:-Qwen/Qwen3-8B}"
 DATASET_REPO="${DATASET_REPO:-patruff/chuckles-reasoning-sft}"
 ADAPTER_REPO="${ADAPTER_REPO:-patruff/chuckles-reasoning-adapter}"
 EPOCHS="${EPOCHS:-3}"
+MAX_STEPS="${MAX_STEPS:-0}"
 TEST_MODE="${TEST_MODE:-false}"
 RUN_INFERENCE="${RUN_INFERENCE:-true}"
 INFER_TITLES="${INFER_TITLES:-pipeline/movie_titles_1995_1999.csv}"
@@ -91,6 +92,9 @@ if [ "$TEST_MODE" = "true" ]; then
     TRAIN_FLAGS+=(--test)
 else
     TRAIN_FLAGS+=(--base-model "$BASE_MODEL")
+fi
+if [ "$MAX_STEPS" -gt 0 ] 2>/dev/null; then
+    TRAIN_FLAGS+=(--max-steps "$MAX_STEPS")
 fi
 
 echo "=== Training ==="

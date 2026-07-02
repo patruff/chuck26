@@ -21,6 +21,12 @@ on:
       epochs:
         description: "Training epochs"
         default: "3"
+      max_steps:
+        description: "Cap training steps (0 = full epochs). ~120 on a 1.7B model is a quick 15-min run"
+        default: "0"
+      infer_limit:
+        description: "Max titles to generate (empty = all 50; test mode = 3)"
+        default: ""
       source_dataset:
         description: "HF dataset with human (title, parody) pairs"
         default: "patruff/chucklesClean720"
@@ -91,6 +97,8 @@ jobs:
             --dataset-repo "${{ inputs.dataset_repo }}" \
             --adapter-repo "${{ inputs.adapter_repo }}" \
             --epochs "${{ inputs.epochs }}" \
+            --max-steps "${{ inputs.max_steps }}" \
+            --infer-limit "${{ inputs.infer_limit }}" \
             --gpu "${{ inputs.gpu_type }}" \
             --git-ref "${{ github.ref_name }}" \
             $([ "${{ inputs.test_mode }}" = "true" ] && echo "--test") \
