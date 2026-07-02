@@ -117,6 +117,25 @@ def align_swaps(original: str, parody: str) -> list[tuple[str, str]]:
     return swaps
 
 
+def split_output_explanation(output: str) -> tuple[str, str]:
+    """Split a 'Parody Title: explanation text' output into its parts.
+
+    Datasets like patruff/chucklesClean2WordsALPACA store the parody and a
+    humor explanation in one field, e.g.
+    'Mozfart: Explanation: Replacing ... Category: juvenile.'
+
+    Returns:
+        (parody, explanation) -- explanation is '' when there is none.
+    """
+    if ":" not in output:
+        return output.strip(), ""
+    parody, _, rest = output.partition(":")
+    rest = rest.strip()
+    if rest.lower().startswith("explanation:"):
+        rest = rest[len("explanation:"):].strip()
+    return parody.strip(), rest
+
+
 def parse_alpaca_text(text: str) -> tuple[str, str] | None:
     """Parse an alpaca-style row ('### Context:\\n<in>\\n\\n### Response: <out>').
 
@@ -203,6 +222,7 @@ def build_reasoning_trace(
     parody: str,
     suggestions: dict[str, Any],
     swap_scores: dict[str, float],
+    humor_note: str = "",
 ) -> str:
     """Synthesize a deterministic <think> reasoning trace for an SFT target.
 
@@ -214,6 +234,7 @@ def build_reasoning_trace(
         parody: Human-approved parody (the SFT answer).
         suggestions: compact_suggestions() output for the title.
         swap_scores: 'orig->repl' -> similarity for the actual swaps.
+        humor_note: Optional human explanation of why the parody is funny.
 
     Returns:
         Full assistant message: '<think>...</think>\\n<parody>'.
@@ -274,6 +295,9 @@ def build_reasoning_trace(
             "The parody keeps the title's phonetic skeleton intact, so it "
             "reads as the original at first glance."
         )
+
+    if humor_note:
+        lines.append(f"Why it lands: {humor_note}")
 
     lines.append(f'Best combination: "{parody}".')
     think = "\n".join(lines)

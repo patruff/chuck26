@@ -42,6 +42,7 @@ from common import (  # noqa: E402
     compact_suggestions,
     parse_alpaca_text,
     phonetic_similarity,
+    split_output_explanation,
 )
 
 
@@ -75,14 +76,21 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def extract_pairs(ds) -> list[tuple[str, str]]:
-    """Extract (title, parody) pairs from any supported dataset schema."""
+def extract_pairs(ds) -> list[tuple[str, str, str]]:
+    """Extract (title, parody, humor_note) triples from any supported schema.
+
+    humor_note is '' for sources without explanations.
+    """
     cols = ds.column_names
-    pairs: list[tuple[str, str]] = []
+    pairs: list[tuple[str, str, str]] = []
     if "input" in cols and "output" in cols:
+        # e.g. patruff/chucklesClean2WordsALPACA: output holds
+        # 'Parody Title: <humor explanation>'
         for row in ds:
             if row["input"] and row["output"]:
-                pairs.append((row["input"].strip(), row["output"].strip()))
+                parody, note = split_output_explanation(row["output"].strip())
+                if parody:
+                    pairs.append((row["input"].strip(), parody, note))
     elif "prompt" in cols and "chosen" in cols:
         for row in ds:
             prompt, chosen = row["prompt"], row["chosen"]
@@ -101,12 +109,12 @@ def extract_pairs(ds) -> list[tuple[str, str]]:
                     title = prompt.split(sep)[-1].strip().strip("'\"")
                     break
             if title and chosen:
-                pairs.append((title.strip(), chosen.strip()))
+                pairs.append((title.strip(), chosen.strip(), ""))
     elif "text" in cols:
         for row in ds:
             parsed = parse_alpaca_text(row["text"])
             if parsed:
-                pairs.append(parsed)
+                pairs.append((*parsed, ""))
     else:
         raise ValueError(f"Unsupported dataset schema: {cols}")
     return pairs
@@ -134,7 +142,7 @@ def main() -> None:
 
     rows: list[dict] = []
     skipped = 0
-    for i, (title, parody) in enumerate(pairs):
+    for i, (title, parody, humor_note) in enumerate(pairs):
         try:
             raw_sugg = pre_compute_suggestions(title, funny_words, parody_tool)
             suggestions = compact_suggestions(raw_sugg)
@@ -154,7 +162,9 @@ def main() -> None:
                 skipped += 1
                 continue
 
-            assistant = build_reasoning_trace(title, parody, suggestions, swap_scores)
+            assistant = build_reasoning_trace(
+                title, parody, suggestions, swap_scores, humor_note
+            )
             rows.append(
                 {
                     "messages": [

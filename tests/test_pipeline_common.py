@@ -11,8 +11,28 @@ from common import (
     build_user_prompt,
     compact_suggestions,
     parse_alpaca_text,
+    split_output_explanation,
     split_think_answer,
 )
+
+
+class TestSplitOutputExplanation:
+    def test_explanation_prefix(self):
+        parody, note = split_output_explanation(
+            "Mozfart: Explanation: Replacing 'art' with 'fart'. Category: juvenile."
+        )
+        assert parody == "Mozfart"
+        assert note.startswith("Replacing 'art'")
+
+    def test_plain_explanation(self):
+        parody, note = split_output_explanation(
+            "American Diaper: The title is altered to include a baby term."
+        )
+        assert parody == "American Diaper"
+        assert note.startswith("The title is altered")
+
+    def test_no_explanation(self):
+        assert split_output_explanation("Jurassic Pork") == ("Jurassic Pork", "")
 
 
 class TestAlignSwaps:
