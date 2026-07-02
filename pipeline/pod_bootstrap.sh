@@ -15,7 +15,7 @@
 #   RUN_INFERENCE  - "true" to generate parodies with the adapter
 #   INFER_TITLES   - CSV of titles for inference (default: 1995-1999 movies)
 #   INFER_LIMIT    - max titles to generate (0 = all; test mode uses 3)
-set -uo pipefail
+set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/patruff/chuck26.git}"
 GIT_REF="${GIT_REF:-main}"
@@ -39,6 +39,12 @@ exec > >(tee "$LOG") 2>&1
 upload_artifacts() {
     # Push the run log (and inference results, if any) to the dataset repo so
     # the orchestrator can retrieve them even after the pod is terminated.
+    # A FAILED marker here fail-fasts the orchestrator's poll loop.
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "[${RUN_ID:-unknown}] BOOTSTRAP FAILED (exit $rc)"
+    fi
+    sleep 2  # let the tee process flush the log before uploading
     python -c "
 import os
 from huggingface_hub import HfApi
@@ -89,11 +95,6 @@ fi
 
 echo "=== Training ==="
 python pipeline/train_reasoning_sft.py "${TRAIN_FLAGS[@]}"
-TRAIN_RC=$?
-if [ $TRAIN_RC -ne 0 ]; then
-    echo "TRAINING FAILED (exit $TRAIN_RC)"
-    exit $TRAIN_RC
-fi
 
 if [ "$RUN_INFERENCE" = "true" ]; then
     echo "=== Inference: $INFER_TITLES (limit $INFER_LIMIT) ==="
@@ -105,3 +106,4 @@ if [ "$RUN_INFERENCE" = "true" ]; then
 fi
 
 echo "=== Pod work complete ==="
+echo "[${RUN_ID:-unknown}] BOOTSTRAP COMPLETE"

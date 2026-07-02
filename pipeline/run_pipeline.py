@@ -42,7 +42,9 @@ PIP_DEPS = [
     "pronouncing",
 ]
 
-DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+# torch >= 2.5 is required by current transformers' bitsandbytes integration
+# (Module.set_submodule); the old 2.4.0 template breaks QLoRA loading.
+DEFAULT_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch280-ubuntu2204"
 # Tried in order until one schedules; all fit an 8B QLoRA run.
 DEFAULT_GPU = (
     "NVIDIA GeForce RTX 4090,NVIDIA RTX A5000,NVIDIA RTX A6000,"
@@ -92,6 +94,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--poll-secs", type=int, default=60)
     p.add_argument("--keep-pod", action="store_true", help="Skip termination (debugging).")
     p.add_argument("--down", metavar="POD_ID", default="", help="Just terminate this pod and exit.")
+    p.add_argument(
+        "--sweep",
+        action="store_true",
+        help="Terminate ALL chuckles-reasoning-* pods (cleanup after "
+        "cancelled runs) and exit.",
+    )
     return p.parse_args()
 
 
@@ -205,6 +213,20 @@ def main() -> None:
         print(f"Terminated pod {args.down}")
         return
 
+    if args.sweep:
+        swept = 0
+        for pod in runpod.get_pods() or []:
+            if str(pod.get("name", "")).startswith("chuckles-reasoning"):
+                pid = pod["id"]
+                try:
+                    runpod.terminate_pod(pid)
+                    print(f"Swept leftover pod {pid} ({pod.get('name')})")
+                    swept += 1
+                except Exception as e:
+                    print(f"Could not terminate {pid}: {e}")
+        print(f"Sweep done: {swept} pod(s) terminated.")
+        return
+
     if not hf_token:
         raise SystemExit("HF_TOKEN env var is required")
 
@@ -215,6 +237,7 @@ def main() -> None:
 
     api = HfApi(token=hf_token)
     start = dt.datetime.now(dt.timezone.utc)
+    run_id = start.strftime("%Y%m%d%H%M%S")
 
     docker_cmd = (
         f"bash -c 'git clone --depth 1 --branch {args.git_ref} {REPO_URL} "
@@ -231,6 +254,7 @@ def main() -> None:
         "EPOCHS": str(args.epochs),
         "TEST_MODE": "true" if args.test else "false",
         "RUN_INFERENCE": "false" if args.no_inference else "true",
+        "RUN_ID": run_id,
         "INFER_TITLES": args.infer_titles,
         **({"INFER_LIMIT": str(args.infer_limit)} if args.infer_limit else {}),
     }
@@ -279,7 +303,20 @@ def main() -> None:
         while time.time() < deadline:
             time.sleep(args.poll_secs)
 
-            if hf_adapter_landed(api, args.adapter_repo, start):
+            # The pod uploads its log with a terminal marker for THIS run id
+            # when the bootstrap finishes (after inference) or errors out.
+            # Don't stop on adapter-landed alone: with inference enabled the
+            # pod is still generating when the adapter appears on the Hub.
+            log_now = fetch_dataset_file(args.dataset_repo, "logs/pod-run-latest.log")
+            if log_now and f"[{run_id}] BOOTSTRAP FAILED" in log_now:
+                print("Pod reported BOOTSTRAP FAILED -- stopping early.")
+                break
+            if log_now and f"[{run_id}] BOOTSTRAP COMPLETE" in log_now:
+                success = hf_adapter_landed(api, args.adapter_repo, start)
+                print("Pod reported BOOTSTRAP COMPLETE "
+                      f"(adapter on Hub: {success}).")
+                break
+            if args.no_inference and hf_adapter_landed(api, args.adapter_repo, start):
                 success = True
                 print(f"Adapter landed: https://huggingface.co/{args.adapter_repo}")
                 break
