@@ -208,6 +208,55 @@ python scripts/process_reviews.py \
 
 ---
 
+## Reasoning SFT Pipeline (RunPod)
+
+Trains a Qwen3 LoRA adapter that *reasons* about phonetic swaps inside
+`<think>` tags before answering, then generates parodies for the top movies
+of 1995-1999. Training data is built from `patruff/chucklesClean720`
+(~3,200 human-approved pairs) with suggestions from the
+`patruff/parody-suggestions` + `patruff/word-phone` HF tools injected into
+every prompt — the same prompt format is used at inference.
+
+### Kick it off from GitHub Actions
+
+Go to **Actions > Reasoning SFT Pipeline > Run workflow**. Leave
+**test_mode** checked for the first run (Qwen3-0.6B, ~50 pairs, 20 steps,
+a few dollars at most); uncheck it for the full Qwen3-8B run.
+
+The job:
+1. Builds the reasoning dataset on the runner (CPU) and pushes it to
+   `patruff/chuckles-reasoning-sft`.
+2. Rents a RunPod GPU (default RTX 4090, community cloud). The pod clones
+   this repo, trains with QLoRA, pushes the adapter to
+   `patruff/chuckles-reasoning-adapter`, generates parodies for
+   `pipeline/movie_titles_1995_1999.csv`, and uploads its log + results.
+3. Polls the Hub until the adapter lands, prints the parodies with their
+   tool-verified phonetic scores, **always terminates the pod**, and writes
+   elapsed time + estimated GPU cost to the job summary.
+
+Secrets needed: `RUNPOD_API_KEY` and `HUGGINGFACE_API_KEY` (or `HF_TOKEN`)
+with **write** scope. `CEREBRAS_API_KEY` is not used by this pipeline.
+
+### Run locally
+
+```bash
+export HF_TOKEN=hf_... RUNPOD_API_KEY=...
+pip install -e . && pip install runpod
+
+# 1. Build the dataset (CPU)
+python pipeline/build_reasoning_dataset.py --limit 50   # drop --limit for all
+
+# 2. Train + infer on a RunPod pod (no SSH needed; pod self-bootstraps)
+python pipeline/run_pipeline.py --test    # cheap validation first
+python pipeline/run_pipeline.py           # full 8B run
+
+# Emergency teardown if a pod is left running:
+python pipeline/run_pipeline.py --down <pod-id>
+```
+
+`pipeline/generate_with_reasoning.py` can also run anywhere with a GPU to
+try the adapter on any titles CSV.
+
 ## Project Structure
 
 ```
@@ -229,6 +278,15 @@ chuck26/
 │   ├── generate_for_review.py # Generate parodies -> review CSV
 │   ├── process_reviews.py     # Review CSV -> DPO dataset -> HuggingFace
 │   └── drive_review_app.py    # Google Drive three-folder workflow
+│
+├── pipeline/                  # Reasoning SFT pipeline (RunPod)
+│   ├── build_reasoning_dataset.py  # Human pairs -> <think> SFT data -> HF
+│   ├── train_reasoning_sft.py      # QLoRA trainer (runs on the pod)
+│   ├── generate_with_reasoning.py  # Inference + HF-tool phonetic scoring
+│   ├── run_pipeline.py             # Pod lifecycle + cost tracking
+│   ├── pod_bootstrap.sh            # Container command run by the pod
+│   ├── common.py                   # Shared prompt/trace/scoring helpers
+│   └── movie_titles_1995_1999.csv  # Top-10 movies per year, 1995-1999
 │
 ├── .github/workflows/
 │   ├── generate-review.yml    # Generate parodies + open review PR

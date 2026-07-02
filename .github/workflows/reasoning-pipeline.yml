@@ -1,0 +1,93 @@
+name: Reasoning SFT Pipeline
+
+# Builds the reasoning SFT dataset on the runner (CPU, using the
+# patruff/parody-suggestions + patruff/word-phone HF tools), then rents a
+# RunPod GPU that trains the LoRA adapter and pushes it to the HF Hub.
+# The pod is always terminated when the run finishes or times out.
+#
+# Secrets used: RUNPOD_API_KEY, and HUGGINGFACE_API_KEY (or HF_TOKEN) with
+# write scope. CEREBRAS_API_KEY is NOT used by this pipeline.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Cheap validation run (Qwen3-0.6B, 20 steps) — try this first"
+        type: boolean
+        default: true
+      base_model:
+        description: "Base model to fine-tune (ignored in test mode)"
+        default: "Qwen/Qwen3-8B"
+      epochs:
+        description: "Training epochs"
+        default: "3"
+      source_dataset:
+        description: "HF dataset with human (title, parody) pairs"
+        default: "patruff/chucklesClean720"
+      dataset_repo:
+        description: "HF repo for the built reasoning SFT dataset"
+        default: "patruff/chuckles-reasoning-sft"
+      adapter_repo:
+        description: "HF repo for the trained adapter (-test suffix added in test mode)"
+        default: "patruff/chuckles-reasoning-adapter"
+      dataset_limit:
+        description: "Max training pairs to build (0 = all ~3200)"
+        default: "0"
+      gpu_type:
+        description: "RunPod GPU type"
+        default: "NVIDIA GeForce RTX 4090"
+      skip_dataset_build:
+        description: "Skip dataset build (reuse existing dataset_repo)"
+        type: boolean
+        default: false
+      run_inference:
+        description: "Smoke-test generation on the pod after training"
+        type: boolean
+        default: true
+
+concurrency:
+  group: reasoning-pipeline
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY || secrets.HF_TOKEN }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -e .
+          pip install runpod
+
+      - name: Build reasoning SFT dataset
+        if: ${{ !inputs.skip_dataset_build }}
+        run: |
+          LIMIT="${{ inputs.dataset_limit }}"
+          # Test mode with no explicit limit: 50 pairs is plenty to validate
+          if [ "${{ inputs.test_mode }}" = "true" ] && [ "$LIMIT" = "0" ]; then LIMIT=50; fi
+          python pipeline/build_reasoning_dataset.py \
+            --source "${{ inputs.source_dataset }}" \
+            --dataset-repo "${{ inputs.dataset_repo }}" \
+            --limit "$LIMIT"
+
+      - name: Train on RunPod
+        run: |
+          python pipeline/run_pipeline.py \
+            --base-model "${{ inputs.base_model }}" \
+            --dataset-repo "${{ inputs.dataset_repo }}" \
+            --adapter-repo "${{ inputs.adapter_repo }}" \
+            --epochs "${{ inputs.epochs }}" \
+            --gpu "${{ inputs.gpu_type }}" \
+            --git-ref "${{ github.ref_name }}" \
+            $([ "${{ inputs.test_mode }}" = "true" ] && echo "--test") \
+            $([ "${{ inputs.run_inference }}" = "true" ] || echo "--no-inference")
