@@ -67,7 +67,24 @@ if os.path.exists('/workspace/inference_results.jsonl'):
     print('inference results uploaded')
 " || echo "WARNING: artifact upload failed"
 }
-trap upload_artifacts EXIT
+# Periodic log upload so the orchestrator (and humans) can see progress
+# mid-run -- without this the pod is a black box until it exits.
+(
+    while true; do
+        sleep 180
+        python -c "
+import os
+from huggingface_hub import HfApi
+HfApi(token=os.environ['HF_TOKEN']).upload_file(
+    path_or_fileobj='$LOG',
+    path_in_repo='logs/pod-run-latest.log',
+    repo_id='$DATASET_REPO',
+    repo_type='dataset',
+)" 2>/dev/null || true
+    done
+) &
+LOG_PUMP_PID=$!
+trap 'kill $LOG_PUMP_PID 2>/dev/null; upload_artifacts' EXIT
 
 echo "=== chucklesPRIME reasoning pipeline pod bootstrap ==="
 echo "repo=$REPO_URL ref=$GIT_REF base=$BASE_MODEL test=$TEST_MODE"
