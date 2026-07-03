@@ -42,6 +42,9 @@ on:
       gpu_type:
         description: "RunPod GPU type(s), comma-separated fallback order"
         default: "NVIDIA GeForce RTX 4090,NVIDIA RTX A5000,NVIDIA RTX A6000,NVIDIA A40,NVIDIA A100 80GB PCIe"
+      timeout_mins:
+        description: "Kill the pod if the run exceeds this many minutes (0 = auto)"
+        default: "0"
       skip_dataset_build:
         description: "Skip dataset build (reuse existing dataset_repo)"
         type: boolean
@@ -100,6 +103,7 @@ jobs:
             --max-steps "${{ inputs.max_steps }}" \
             --infer-limit "${{ inputs.infer_limit }}" \
             --gpu "${{ inputs.gpu_type }}" \
+            --timeout-mins "${{ inputs.timeout_mins }}" \
             --git-ref "${{ github.ref_name }}" \
             $([ "${{ inputs.test_mode }}" = "true" ] && echo "--test") \
             $([ "${{ inputs.run_inference }}" = "true" ] || echo "--no-inference")
