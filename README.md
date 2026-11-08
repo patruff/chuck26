@@ -6,6 +6,8 @@ Generates funny parody titles (e.g. "The Matrix" -> "The Mattress") using AI age
 
 ## Review film parodies and export DPO
 
+The MovieLens batch has 185 reviewable films out of 200. Browse the [current pairs](results/movielens-200/CATALOG.md) or see the [checkpoints and restart commands for the last 15](results/movielens-200/README.md#resume-the-last-15-films).
+
 Run the local Python app from a checkout. It needs Flask and Python 3.10+ on macOS or Linux.
 
 ```bash

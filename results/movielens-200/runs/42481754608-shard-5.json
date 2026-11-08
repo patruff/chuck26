@@ -101,7 +101,7 @@
   "termination_confirmed": true,
   "termination_verification": "RunPod returned 404 after superseded job teardown",
   "generation_status": "superseded",
-  "posted_bill_usd": 0.515812,
-  "posted_bill_seconds": 1866.25,
-  "bill_checked_at": "2026-11-08T15:42:25.679642+00:00"
+  "posted_bill_usd": 0.544556,
+  "posted_bill_seconds": 1970.78,
+  "bill_checked_at": "2026-11-08T16:23:36.905674+00:00"
 }

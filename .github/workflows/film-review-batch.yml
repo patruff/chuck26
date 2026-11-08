@@ -13,6 +13,10 @@ on:
       resume_run:
         description: Optional previous run ID to import checkpoints from
         type: string
+      use_saved_sides:
+        description: Reuse matching committed MovieLens checkpoints before generating remaining sides
+        type: boolean
+        default: false
       prompt_snapshot:
         description: Committed results directory containing matching guidance.txt and prompt-revision.json
         default: results/film-adult-premises
@@ -37,6 +41,7 @@ jobs:
       PYTHONUNBUFFERED: '1'
       SHARD: ${{ matrix.shard }}
       SNAPSHOT: ${{ inputs.prompt_snapshot || 'results/film-adult-premises' }}
+      USE_SAVED_SIDES: ${{ inputs.use_saved_sides }}
       SPECIAL_RANKS: ${{ inputs.ranks || '[]' }}
       SHARDS: ${{ inputs.shards }}
     steps:
@@ -61,9 +66,8 @@ jobs:
             git --literal-pathspecs ls-files --error-unmatch -- "$file"
           done
           mkdir -p out/samples
-          if [[ -d restored/samples ]]; then cp -a restored/samples/. out/samples/; fi
           python - <<'PY'
-          import csv,json,os
+          import csv,gzip,json,os,shutil,sys
           from pathlib import Path
           shard=int(os.environ['SHARD'])
           assert 0<=shard<8
@@ -78,6 +82,30 @@ jobs:
               rows=all_films[shard::8]
           with Path('out/films.csv').open('w',newline='') as f:
               w=csv.DictWriter(f,rows[0]); w.writeheader(); w.writerows(rows)
+          sys.path.insert(0,'pipeline')
+          from generate_film_pairs import sample_signature
+          from march_source import NOTEBOOK
+          from run_gguf_test import MODEL
+          snapshot=Path(os.environ['SNAPSHOT'])
+          signature=sample_signature(snapshot/'prompt-revision.json',NOTEBOOK,MODEL)
+          sources=[Path('restored/samples')]
+          if os.environ['USE_SAVED_SIDES'].lower()=='true':
+              base=Path('results/movielens-200')
+              sources.extend([base/'samples',base/'resume'/snapshot.name])
+          for row in rows:
+              for side in 'ab':
+                  name=f"{int(row['rank']):03}-{side}.json.gz"
+                  for directory in sources:
+                      candidate=directory/name
+                      if not candidate.is_file(): continue
+                      with gzip.open(candidate,'rt',encoding='utf-8') as f: checkpoint=json.load(f)
+                      if checkpoint['signature']!=signature:
+                          if directory==sources[0]: raise ValueError(f'Wrong prompt or model in restored artifact: {name}')
+                          continue
+                      if checkpoint['film']!=row or checkpoint['side']!=side:
+                          raise ValueError(f'Wrong MovieLens film or side in {candidate}')
+                      shutil.copyfile(candidate,Path('out/samples')/name)
+                      break
           PY
       - name: Generate the two traced samples per film
         env:

@@ -1,0 +1,49 @@
+{
+  "scope": "Completed independent samples on existing RunPod servers",
+  "ranks": [
+    157
+  ],
+  "shared_server": true,
+  "generation_status": "complete",
+  "samples": [
+    {
+      "side": "a",
+      "sample_sha256": "4df8ee6c3246aa93b12767b728499091d588a6ff5295487cda504792b35f592d",
+      "source_run": {
+        "scope": "film-adult-premises shared RunPod supplement",
+        "ranks": [
+          157
+        ],
+        "sides": "a",
+        "generation_status": "complete",
+        "model": "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        "parent_action_run": 42491023480,
+        "cost_note": "Uses the existing RunPod server. Usage is included in the parent run.",
+        "started_at": "2026-11-08T16:14:12.150591+00:00",
+        "ended_at": "2026-11-08T16:17:41.670036+00:00",
+        "applied_instructions_sha256": "1ec8438000c783887b795cc5f574496568aaa1ab3115146b37b6944147cccbf1",
+        "shared_server": true
+      }
+    },
+    {
+      "side": "b",
+      "sample_sha256": "9947f1fdcee2334aee1c05622c6f5bb1e0c0ba47f8a8c6053d57e461a1acf1d3",
+      "source_run": {
+        "scope": "film-adult-premises shared RunPod supplement",
+        "ranks": [
+          157
+        ],
+        "sides": "b",
+        "generation_status": "complete",
+        "model": "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        "parent_action_run": 42491023480,
+        "cost_note": "Uses the existing RunPod server. Usage is included in the parent run.",
+        "started_at": "2026-11-08T16:14:12.150591+00:00",
+        "ended_at": "2026-11-08T16:17:57.200713+00:00",
+        "applied_instructions_sha256": "1ec8438000c783887b795cc5f574496568aaa1ab3115146b37b6944147cccbf1",
+        "shared_server": true
+      }
+    }
+  ],
+  "cost_note": "Included in the parent GPU allocations."
+}

@@ -152,6 +152,12 @@ def generate_side(job):
     return False
 
 
+def sample_signature(revision, notebook, model):
+    return hashlib.sha256(
+        revision.read_bytes() + notebook.read_bytes() + model.encode() + BANK_SHA256.encode()
+    ).hexdigest()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--server", required=True)
@@ -171,12 +177,7 @@ def main():
     if hashlib.sha256(args.bank.read_bytes()).hexdigest() != BANK_SHA256:
         p.error("Incorrect word bank")
     args.directory.mkdir(parents=True, exist_ok=True)
-    signature = hashlib.sha256(
-        args.revision.read_bytes()
-        + args.notebook.read_bytes()
-        + args.model.encode()
-        + BANK_SHA256.encode()
-    ).hexdigest()
+    signature = sample_signature(args.revision, args.notebook, args.model)
     jobs = [(r, side, args.directory, signature) for r in films for side in ("a", "b")]
     with ProcessPoolExecutor(
         args.slots,

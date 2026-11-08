@@ -130,5 +130,8 @@
     184,
     192,
     200
-  ]
+  ],
+  "posted_bill_usd": 0.653383,
+  "posted_bill_seconds": 2365.16,
+  "bill_checked_at": "2026-11-08T16:23:36.905674+00:00"
 }
