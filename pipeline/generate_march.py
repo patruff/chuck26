@@ -1,26 +1,46 @@
-"""Generate March-style parody attempts, check the actual swaps, and have Qwen choose a winner."""
-
+"""Use smolagents CodeAgent to create and check movie-title parodies on a GGUF server."""
 import argparse
 import ast
-import csv
+from difflib import SequenceMatcher
 import json
 import os
 from pathlib import Path
-import time
-
-import requests
+import re
 
 from common import MIN_PHONETIC_SCORE, align_swaps, clean_word, compact_suggestions
-from generate_with_reasoning import REPO_ROOT, read_titles
+from generate_with_reasoning import read_titles
 from chuckles_prime.tools import load_parody_tools
+from smolagents import ActionStep, CodeAgent, OpenAIModel, Tool, load_tool
+from smolagents.monitoring import LogLevel
 
-SYSTEM = (
-    "You write movie-title parodies for an audience that likes dark humor, vulgar wordplay, "
-    "sexual innuendo and slapstick. Put the laugh first. Keep the sound and cadence of the title "
-    "so the audience recognizes it aloud. Look for a second meaning that paints a funny scene. "
-    "A taboo word alone is not a punchline. Rate how funny each joke is to this audience. "
-    "Use your thinking channel to brainstorm. Keep the requested JSON in the final answer."
-)
+# These Hub sources match the tool classes printed in the linked Colab's saved output.
+COLAB_TOOLS = {"patruff/parody-suggestions": "39102988c0309dd7cb96d196f671c0e5ef9c70aa",
+               "patruff/word-phone": "b1c920767796dde68f208d4182c7d889be02ee5b"}
+RUNNING_MAN_TOOLS = {"patruff/parody-suggestions": "8147e43f9acfb3af5123fd6fd329c112d8ff7a6b",
+                     "patruff/word-phone": "044bccae4f60f213a2246e69c03558a52c6525ff"}
+RUNNING_MAN_CELL = "tbAjK5rX4tjo"
+
+
+class ReasoningGGUFModel(OpenAIModel):
+    @property
+    def supports_stop_parameter(self):
+        # The server matches stop strings inside thinking as well as visible text.
+        # OpenAIModel applies CodeAgent's stops to the visible content locally instead.
+        return False
+
+
+def running_man_prompt(notebook, title, suggestions):
+    """Render the saved cell's two substitutions without evaluating notebook code."""
+    cells = json.loads(notebook.read_text(encoding="utf-8"))["cells"]
+    cell = next((c for c in cells if c.get("metadata", {}).get("id") == RUNNING_MAN_CELL), None)
+    if cell is None:
+        raise ValueError(f"Expected Running Man demonstration cell {RUNNING_MAN_CELL} in {notebook.name}")
+    module = ast.parse("".join(cell["source"]))
+    fn = next(n for n in module.body if isinstance(n, ast.FunctionDef) and n.name == "generate_parody")
+    template = next(n.value for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "prompt" for t in n.targets))
+    values = {"title": title, "json.dumps(suggestions, indent=2)": json.dumps(suggestions, indent=2)}
+    return "".join(n.value if isinstance(n, ast.Constant) else values[ast.unparse(n.value)] for n in template.values)
 
 
 def load_word_bank(path):
@@ -37,178 +57,293 @@ def load_word_bank(path):
     return data["funny_words"], data["custom_phones"]
 
 
-def suggestions_for(title, suggester, words, phones):
+def suggestions_for(title, suggester, words, phones, cutoff=MIN_PHONETIC_SCORE):
     raw = {}
     for token in title.split():
         word = clean_word(token)
         if word in raw or not word:
             continue
         raw[word] = json.loads(suggester.forward(
-            target=word, word_list_str=words, min_similarity=str(MIN_PHONETIC_SCORE), custom_phones=phones
+            target=word, word_list_str=words, min_similarity=str(cutoff),
+            **({"custom_phones": phones} if phones else {}),
         ))
-    return compact_suggestions(raw, top_n=12), {w: r["error"] for w, r in raw.items() if "error" in r}
+    return raw, {w: r["error"] for w, r in raw.items() if "error" in r}
 
 
-def examples_for(title):
-    with (REPO_ROOT / "parodies2026/known100.csv").open(encoding="utf-8") as f:
-        reference = [r for r in csv.DictReader(f) if r["original"] in
-                     {"The Matrix", "Pulp Fiction", "Kill Bill", "The Godfather"}]
-    return "\n".join(f'{r["original"]} → {r["parody"]}' for r in reference
-                     if r["original"].casefold() not in title.casefold())
+def notebook_words(path):
+    """Read only the literal funny_words list. Notebook code is never executed."""
+    candidates = []
+    for cell in json.loads(path.read_text(encoding="utf-8"))["cells"]:
+        code = "".join(cell.get("source", []))
+        if cell["cell_type"] != "code" or not re.search(r"(?m)^funny_words\s*=", code):
+            continue
+        for stmt in ast.parse(code).body:
+            if isinstance(stmt, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "funny_words" for t in stmt.targets):
+                words = ast.literal_eval(stmt.value)
+                if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
+                    raise ValueError("Expected a literal list of words")
+                candidates.append(words)
+    if len(candidates) != 1 or not candidates[0]:
+        raise ValueError("Expected a single nonempty funny_words list in the notebook")
+    return candidates[0]
 
 
-def completion(args, task):
-    started = time.monotonic()
-    payload = {
-        "model": args.base_model, "messages": [
-            {"role": "system", "content": SYSTEM}, {"role": "user", "content": task},
-        ],
-        "temperature": 0.75, "top_p": 0.9, "seed": 42, "max_tokens": 3584,
-        "chat_template_kwargs": {"enable_thinking": True},
-        "stream": True, "stream_options": {"include_usage": True},
-    }
-    headers = {"Authorization": "Bearer " + os.environ["LLAMA_API_KEY"]} if os.getenv("LLAMA_API_KEY") else {}
-    trace, content = [], []
-    usage, finish_reason = {}, None
-    with requests.post(args.llama_server.rstrip("/") + "/v1/chat/completions",
-                       headers=headers, json=payload, stream=True, timeout=(15, 150)) as response:
-        response.raise_for_status()
-        for line in response.iter_lines():
-            if not line.startswith(b"data: "):
-                continue
-            event = line[6:]
-            if event == b"[DONE]":
-                break
-            chunk = json.loads(event)
-            if chunk.get("error"):
-                raise RuntimeError(str(chunk["error"]))
-            if chunk.get("usage"):
-                usage = chunk["usage"]
-            for choice in chunk.get("choices", []):
-                delta = choice.get("delta", {})
-                trace.append(delta.get("reasoning_content") or "")
-                content.append(delta.get("content") or "")
-                if choice.get("finish_reason"):
-                    finish_reason = choice["finish_reason"]
-    return {"reasoning": "".join(trace), "content": "".join(content), "finish_reason": finish_reason,
-            "usage": usage, "elapsed_seconds": round(time.monotonic() - started, 2), "prompt": task}
+class WordPhoneTool(Tool):
+    name = "word_phone_tool"
+    description = ("Check an original word against its proposed replacement. Returns a Python dict with "
+                   "phones and score; access result['score']. An unknown pronunciation has score None.")
+    inputs = {"word": {"type": "string", "description": "Original word"},
+              "compare_to": {"type": "string", "description": "Proposed replacement word"}}
+    output_type = "object"
+
+    def __init__(self, analyzer, phones):
+        super().__init__()
+        self.analyzer = analyzer
+        self.phones = phones
+        self.calls = []
+
+    def forward(self, word: str, compare_to: str) -> dict:
+        word, compare_to = clean_word(word), clean_word(compare_to)
+        raw = json.loads(self.analyzer.forward(word=word, compare_to=compare_to,
+                                               **({"custom_phones": self.phones} if self.phones else {})))
+        similarity = raw.get("similarity") or {}
+        comparison = raw.get("comparison") or {}
+        observation = {
+            "word": word, "compare_to": compare_to, "score": similarity.get("similarity"),
+            "phones": (raw.get("analysis") or raw).get("phones"),
+            "replacement_phones": (comparison.get("analysis") or comparison).get("phones"),
+        }
+        if observation["score"] is None:
+            observation["error"] = raw.get("error") or comparison.get("error") or "Unscorable comparison"
+        rendered = json.dumps(observation, ensure_ascii=False)
+        self.calls.append({"word": word, "compare_to": compare_to, "score": observation["score"],
+                           "returned": rendered, "tool_result": raw})
+        return observation
 
 
-def parse_response(message):
-    if message["finish_reason"] != "stop" or not message["reasoning"].strip():
-        raise ValueError("Incomplete model answer or missing thinking channel")
-    content = message["content"].strip()
-    if content.startswith("```") and content.endswith("```"):
-        content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return json.loads(content)
+def parse_answer(answer):
+    if isinstance(answer, str):
+        answer = json.loads(answer)
+    if not isinstance(answer, dict):
+        raise ValueError("Pass a dictionary to final_answer")
+    attempts = answer["attempts"]
+    titles = [a["title"] for a in attempts]
+    if len(set(t.casefold().strip() for t in titles)) != len(titles) or len(titles) < 3:
+        raise ValueError("Include at least three distinct attempts")
+    if answer["winner"] not in titles or answer["runner_up"] not in titles or answer["winner"] == answer["runner_up"]:
+        raise ValueError("Winner and runner_up must be different titles from attempts")
+    if not all(isinstance(a["why"], str) and a["why"].strip() for a in attempts) or not answer["explanation"].strip():
+        raise ValueError("Explain the jokes and the winner")
+    return answer
 
 
-def request_json(args, row, stage, task):
-    row[stage] = completion(args, task)
-    try:
-        return parse_response(row[stage])
-    except (ValueError, TypeError) as exc:
-        row[stage + "_first_response"] = row[stage]
-        repair = ("\nThe last response could not be read: " + str(exc)
-                  + ". Return a single complete JSON object, without markdown or extra text.")
-        row[stage] = completion(args, task + repair)
-        return parse_response(row[stage])
-
-
-def verify(title, candidate, analyzer, phones):
-    checks = []
+def score_from_calls(title, candidate, observed):
     aligned = len(title.split()) == len(candidate.split())
-    if aligned:
-        for original, replacement in align_swaps(title, candidate):
-            result = json.loads(analyzer.forward(word=original, compare_to=replacement, custom_phones=phones))
-            checks.append({"original": original, "replacement": replacement,
-                           "score": (result.get("similarity") or {}).get("similarity"), "tool_result": result})
-    passes = aligned and 1 <= len(checks) <= 2 and all(
-        isinstance(c["score"], (float, int)) and c["score"] >= MIN_PHONETIC_SCORE for c in checks)
-    return {"aligned": aligned, "swaps": checks, "passes": passes}
+    pairs = align_swaps(title, candidate) if aligned else []
+    if not aligned:
+        original = list(map(clean_word, title.split()))
+        replacement = list(map(clean_word, candidate.split()))
+        for op, i, j, k, end in SequenceMatcher(None, original, replacement, autojunk=False).get_opcodes():
+            if op == "replace":
+                pairs.extend(pair for pair in observed
+                             if pair[0] in original[i:j] and pair[1] in replacement[k:end])
+    swaps = []
+    for word, replacement in pairs:
+        key = (word, replacement)
+        if key not in observed:
+            raise ValueError(f"Print word_phone_tool({word!r}, {replacement!r}) in a separate step, then read its result")
+        swaps.append({"original": word, "replacement": replacement, "score": observed[key]["score"]})
+    return {"aligned": aligned, "swaps": swaps,
+            "passes": aligned and bool(swaps) and all(s["score"] is not None and s["score"] >= MIN_PHONETIC_SCORE for s in swaps)}
 
 
-def generate(args, row, suggester, analyzer, words, phones):
-    title = row["input_title"]
-    suggestions, warnings = suggestions_for(title, suggester, words, phones)
-    row.update(suggested_words=suggestions, suggestion_warnings=warnings)
-    task = f"""Movie: {title}
-Examples of the house style:
-{examples_for(title)}
+def run_agent(model, title, suggested, phones, analyzer, record, reference_prompt=None):
+    phone = WordPhoneTool(analyzer, phones)
+    steps = []
+    observed = {}
+    step_offset = 0
 
-suggested_words from parody-suggestions (score scale 0 to 1):
-{json.dumps(suggestions, ensure_ascii=False)}
+    def capture(step, **kwargs):
+        if not isinstance(step, ActionStep):
+            return
+        message = step.model_output_message
+        raw = getattr(message, "raw", None)
+        choice = raw.choices[0] if raw and raw.choices else None
+        notes = step.observations or ""
+        number = step_offset + step.step_number
+        calls = [c for c in phone.calls if "step" not in c]
+        for c in calls:
+            c["step"] = number
+            c["printed_by_agent"] = c["returned"] in notes or str(json.loads(c["returned"])) in notes
+            if not c["printed_by_agent"]:
+                notes += "\nword_phone_tool returned: " + c["returned"]
+            c["visible_in_observation"] = True
+            observed[(c["word"], c["compare_to"])] = c
+        # A Python action may print only a score or assign the result to a variable.
+        # Keep the complete receipt in the ActionStep that CodeAgent reads next.
+        step.observations = notes
+        steps.append({"step": number,
+                      "reasoning": (getattr(choice.message, "reasoning_content", None) or "") if choice else "",
+                      "model_output": choice.message.content if choice else step.model_output,
+                      "code": step.code_action, "observations": notes,
+                      "finish_reason": choice.finish_reason if choice else None,
+                      "error": str(step.error) if step.error else None, "final": step.is_final_answer})
+        print(f"{title}: agent step {number}, {len(calls)} tool checks, final={step.is_final_answer}", flush=True)
+        if step.error:
+            print(f"  {str(step.error)[:300]}", flush=True)
 
-Write three or four genuinely distinct variations. Swap one or two words in place and keep the
-original word count. You can pitch a better word of your own, including when the list is empty.
-Give each title a humor rating out of ten and one sentence describing the joke or the movie
-it now promises. Try different comic premises rather than slight rewrites of one punchline.
-I will run word-phone on every swap before you select the winner. Leave sound scores to the tool.
-Return only JSON in this shape, with a number for humor:
-{{"attempts":[{{"title":"...","humor":8,"why":"..."}}]}}"""
-    attempts = request_json(args, row, "draft", task)["attempts"]
-    if not isinstance(attempts, list) or not 3 <= len(attempts) <= 4:
-        raise ValueError("Expected three or four attempts")
-    seen = set()
-    row["attempts"] = []
-    for a in attempts:
-        text = a["title"].strip()
-        if not text or text.casefold() in seen or not a["why"].strip() or not 0 <= a["humor"] <= 10:
-            raise ValueError("Expected distinct, rated attempts with a humor note")
-        seen.add(text.casefold())
-        row["attempts"].append({**a, **verify(title, text, analyzer, phones)})
-    checked = [
-        {"id": i, **{k: a[k] for k in ("title", "humor", "why", "aligned", "passes")},
-         "swaps": [{k: s[k] for k in ("original", "replacement", "score")} for s in a["swaps"]]}
-        for i, a in enumerate(row["attempts"], 1)
-    ]
-    print(f"{title}: checked {len(checked)} proposals, asking the model to choose", flush=True)
-    pick = request_json(args, row, "selection", f"""Movie: {title}
-Below are your attempts with actual word-phone results. Null means unscorable. A pass requires
-one or two replacements and at least {MIN_PHONETIC_SCORE} on each. Choose the funniest passing
-attempt as winner. If none passes, choose the funniest attempt and explain the tradeoff.
-Pick a different runner-up. Use the supplied IDs and explain why the winner lands better.
-Verified attempts:
-{json.dumps(checked, ensure_ascii=False)}
-Return only JSON: {{"winner":1,"runner_up":2,"why":"one sentence"}}.""")
-    winner, second = pick["winner"], pick["runner_up"]
-    if (type(winner) is not int or type(second) is not int or winner == second or
-            not (1 <= winner <= len(attempts) and 1 <= second <= len(attempts)) or not pick["why"].strip()):
-        raise ValueError("Invalid selection IDs or missing explanation")
-    row.update(selection_result=pick, parody=row["attempts"][winner-1]["title"],
-               runner_up=row["attempts"][second-1]["title"], passes_threshold=row["attempts"][winner-1]["passes"])
-    if not row["passes_threshold"] and any(a["passes"] for a in row["attempts"]):
-        row["selection_warning"] = "The model selected a nonpassing candidate despite a passing alternative"
+    def validate(answer, memory, agent):
+        result = parse_answer(answer)
+        if not observed:
+            raise ValueError("Print the phonetic tool results and read the observation before selecting a winner")
+        if reference_prompt:
+            if len(result["attempts"]) not in (3, 4) or any(
+                not isinstance(a.get("humor"), (float, int)) or not 0 <= a["humor"] <= 10 for a in result["attempts"]
+            ):
+                raise ValueError("Include three or four attempts with numeric humor ratings out of ten")
+            missing = []
+            for finalist in (result["winner"], result["runner_up"]):
+                if len(finalist.split()) != len(title.split()):
+                    raise ValueError("Return finalists with a word-by-word alignment for the original title")
+                for orig, repl in zip(title.split(), finalist.split()):
+                    pair = (clean_word(orig), clean_word(repl))
+                    if pair not in observed and pair not in missing:
+                        missing.append(pair)
+            if missing:
+                action = "\n".join(f"print(word_phone_tool(word={o!r}, compare_to={r!r}))" for o, r in missing)
+                raise ValueError("These finalist pairs have no prior observation. Execute these calls in one "
+                                 "Python action, read the returns, then call final_answer:\n" + action)
+            return True
+        for a in result["attempts"]:
+            assessed = score_from_calls(title, a["title"], observed)
+            if a["title"] == result["winner"] and not assessed["swaps"]:
+                raise ValueError("Check at least one changed word in the winning title with word_phone_tool")
+        return True
+
+    agent = CodeAgent(tools=[phone], model=model, additional_authorized_imports=["json"],
+                      instructions="Write movie-title parodies. Favor the whole joke over a numeric score. "
+                                   "Use word_phone_tool and read its observations before deciding.",
+                      step_callbacks=[capture], final_answer_checks=[validate], max_steps=7,
+                      return_full_result=True, verbosity_level=LogLevel.OFF)
+    task = f"""Create a funny parody of the movie title "{title}". Our audience likes absurd, dark or adult wordplay.
+Start with a single-word swap. Then try a two-word change; keep more of the original if it sounds funnier.
+Compare at least three distinct pitches. Choose the funniest whole phrase that still sounds recognizable.
+Suggestions from parody-suggestions are optional: {json.dumps(suggested, ensure_ascii=False)}
+
+Use Python code in the agent's code block. For each changed word of each attempt, call
+print(word_phone_tool(word="original", compare_to="replacement")) with actual words.
+Read the returned observations in your next step. A null score is a real result. You can revise, test new swaps,
+and reconsider. A high score can also mean a rhyme. Historical raw scores can exceed 1. Use the sound and the premise to decide.
+After checking the words, call final_answer with a dictionary in this shape:
+{{"attempts":[{{"title":"...","why":"the comic premise"}}], "winner":"exact title", "runner_up":"exact title",
+"explanation":"why this wins, what changed and what you kept"}}. The pipeline attaches the actual scores."""
+    if reference_prompt:
+        record["reference_prompt"] = reference_prompt
+        task = reference_prompt + """
+
+CodeAgent execution and return format:
+Use the provided word_phone_tool directly. Call word_phone_tool(word=ORIGINAL, compare_to=REPLACEMENT),
+in that order. It returns a Python dict; check["score"] is the numeric field. Print each result,
+then read the observation in a later step. Check every word, including unchanged words, in both finalists.
+The suggested scores are from a different tool. Use only the observed verifier scores as verification.
+Aim above 0.8 and try alternatives for results below 0.6, as described above. Explain any shortfall.
+The report attaches the complete verification table to your final answer. Do not print a second report
+or recompute a minimum. Once you have seen the checks, call final_answer in one short Python action.
+Return final_answer with a dictionary: {"attempts":[{"title":"...","humor":8,"why":"..."}],
+"winner":"exact title","runner_up":"exact title","explanation":"why the final phrase works"}.
+Use the thinking channel for brainstorming. Keep executable actions in the CodeAgent code block."""
+    record.update(task=task, steps=steps, tool_calls=phone.calls)
+    result = agent.run(task)
+    if result.state == "max_steps_error" and observed:
+        # Keep the real observations and the model's own drafts in agent memory.
+        # A framework-generated fallback alone is never counted as a checked result.
+        record["initial_state"] = result.state
+        step_offset = max(s["step"] for s in steps)
+        continuation = ("Finish the same movie title using your own drafted attempts and the tool observations "
+                        "already in memory. If finalist pairs are missing, check them together in one Python action. "
+                        "Then call final_answer once with attempts (title, humor, why), winner, runner_up, explanation. "
+                        "Use a short literal Python dictionary; the report will attach the observed scores.")
+        record["continuation_task"] = continuation
+        result = agent.run(continuation, reset=False, max_steps=3)
+    record["state"] = result.state
+    if result.state != "success" or not any(step["final"] for step in steps):
+        raise RuntimeError(f"CodeAgent did not reach a checked final_answer ({result.state})")
+    answer = parse_answer(result.output)
+    finalists = (answer["winner"], answer["runner_up"])
+    attempts = []
+    for a in answer["attempts"]:
+        if reference_prompt and a["title"] not in finalists:
+            attempts.append({**a, "finalist": False})
+        else:
+            attempts.append({**a, **score_from_calls(title, a["title"], observed), "finalist": a["title"] in finalists})
+    record.update(parody=answer["winner"], runner_up=answer["runner_up"], explanation=answer["explanation"],
+                  attempts=attempts)
+    if reference_prompt:
+        record["finalist_checks"] = {
+            t: [{k: observed[(clean_word(o), clean_word(r))][k] for k in ("word", "compare_to", "score", "step")}
+                for o, r in zip(title.split(), t.split())] for t in finalists}
+    winner = next(a for a in record["attempts"] if a["title"] == record["parody"])
+    record["passes_threshold"] = winner["passes"]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("llama-server", "base-model", "titles", "output"):
         parser.add_argument("--" + name, required=True)
-    parser.add_argument("--word-bank", required=True, type=Path)
-    parser.add_argument("--limit", required=True, type=int)
+    sources = parser.add_mutually_exclusive_group(required=True)
+    sources.add_argument("--word-bank", type=Path)
+    sources.add_argument("--colab-notebook", type=Path)
+    parser.add_argument("--example-notebook", type=Path, help="Running Man notebook, used with --word-bank")
+    parser.add_argument("--limit", type=int, required=True)
     args = parser.parse_args()
+    if args.example_notebook and not args.word_bank:
+        parser.error("--example-notebook requires the March --word-bank")
+    if args.colab_notebook:
+        words, phones, cutoff = notebook_words(args.colab_notebook), {}, 0.8
+    else:
+        words, phones = load_word_bank(args.word_bank)
+        cutoff = MIN_PHONETIC_SCORE
     titles = read_titles(args.titles)[:args.limit]
     if not titles:
         raise SystemExit("No titles to generate")
-    words, phones = load_word_bank(args.word_bank)
-    print(f"March profile: {len(words)} suggested words, {len(phones)} custom pronunciations", flush=True)
-    words_json = json.dumps(words)
-    suggester, analyzer = load_parody_tools()
+    print(f"CodeAgent: {len(words)} words, {len(phones)} custom pronunciations, cutoff {cutoff}", flush=True)
+    revisions = COLAB_TOOLS if args.colab_notebook else RUNNING_MAN_TOOLS
+    if args.colab_notebook or args.example_notebook:
+        suggester, analyzer = [load_tool(repo, revision=rev, trust_remote_code=True) for repo, rev in revisions.items()]
+    else:
+        suggester, analyzer = load_parody_tools()
+    model = ReasoningGGUFModel(model_id=args.base_model, api_base=args.llama_server.rstrip("/") + "/v1",
+                        api_key=os.environ.get("LLAMA_API_KEY") or "local", flatten_messages_as_text=True,
+                        client_kwargs={"timeout": 120, "max_retries": 1}, temperature=0.7, top_p=0.9,
+                        max_tokens=3072, seed=42, extra_body={"repeat_penalty": 1.1,
+                        "chat_template_kwargs": {"enable_thinking": True}})
     failed = False
     with Path(args.output).open("w", encoding="utf-8") as out:
         for title in titles:
-            row = {"input_title": title, "profile": "march", "model": args.base_model}
+            row = {"input_title": title, "model": args.base_model, "agent": "smolagents.CodeAgent",
+                   "suggestion_cutoff": cutoff, "word_count": len(words), "custom_pronunciations": len(phones)}
+            if args.colab_notebook or args.example_notebook:
+                row["tool_revisions"] = revisions
             try:
-                generate(args, row, suggester, analyzer, words_json, phones)
-            except (ValueError, TypeError, KeyError, requests.RequestException, RuntimeError) as exc:
-                row["error"] = str(exc)
+                suggested, errors = suggestions_for(title, suggester, json.dumps(words), phones, cutoff)
+                row.update(suggested_words=compact_suggestions(suggested, top_n=len(words)),
+                           suggestion_tool_results=suggested, suggestion_warnings=errors)
+                prompt = None
+                if args.example_notebook:
+                    row["reference_cell"] = RUNNING_MAN_CELL
+                    prompt = running_man_prompt(args.example_notebook, title,
+                                                {w: suggested[clean_word(w)] for w in title.split()})
+                run_agent(model, title, suggested, phones, analyzer, row, prompt)
+                if not any(s["reasoning"].strip() for s in row["steps"]):
+                    raise ValueError("No model reasoning trace was captured")
+            except Exception as exc:
                 failed = True
+                row["error"] = str(exc)
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
             out.flush()
             print(f"{title} → {row.get('parody', row.get('error'))}", flush=True)
     if failed:
-        raise SystemExit("One or more March samples failed; inspect the per-title records")
+        raise SystemExit("One or more CodeAgent runs failed; inspect results.jsonl")
 
 
 if __name__ == "__main__":

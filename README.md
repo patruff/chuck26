@@ -282,26 +282,51 @@ from the scores in `swap_scores`. The run configuration and pod teardown
 status are in `run.json`. GitHub Actions collects both files in the
 `chuckles-gguf-test` artifact.
 
-### Run the March 2025 prompt style
+### Run the Chuckles smolagents CodeAgent
 
-Pass the `word_structures.py` from your `patruff/chuck2025` checkout at
-`783c529`. It supplies the 1,565 historical funny words and their custom
-pronunciations. The controller reads the two data assignments locally.
+To replay the saved **The Running Man** demonstration, provide the local
+export of `Copy of may18CerebrasQwen3.ipynb` and the March word bank.
 
 ```bash
 python pipeline/run_gguf_test.py \
-  --march-word-bank ../chuck2025/word_structures.py \
-  --titles titles.csv --limit 5 --output-dir out/gguf-march-01
+  --example-notebook may18CerebrasQwen3.ipynb \
+  --march-word-bank ../chuck2025/word_structures.py --cloud SECURE \
+  --titles example-titles.csv --limit 1 --output-dir out/gguf-running-man-01
 ```
 
-Qwen drafts three or four rated titles using actual `parody-suggestions`
-results. The controller checks each changed word with `word-phone` and gives
-those results back to Qwen to select a winner and a runner-up. Every swapped
-word must score at least 0.60 for the attempt to pass. A changed word count or
-a missing score makes the attempt ineligible for a phonetic pass. The JSONL
-includes both prompts, both model responses and reasoning traces, the tool
-evidence for every attempt, and the model's selection. The thinking budget
-is 2,304 tokens per phase.
+Put `The Running Man` under the `title` header of the input CSV. This mode
+renders the original creative and verification prompt from cell `tbAjK5rX4tjo`,
+using the two matching HF tool revisions, the 0.6 suggestion cutoff, and custom
+pronunciations. CodeAgent adds its executable action and result format.
+It records every word pair for both finalists, including unchanged words.
+The saved cell asks for scores above 0.8 and elsewhere gives 0.6 as the
+fallback threshold. Inspect the actual scores for both.
+
+Use the local export of the `unslothQwQ4bitGOOD` notebook to replay its
+“As Good As It Gets” setup on the 27B GGUF. The runner reads the literal
+`funny_words` list without executing notebook cells. It uses the 0.8
+suggestion cutoff and the two HF tool revisions whose Python source matches
+the archived cell output.
+
+```bash
+python pipeline/run_gguf_test.py \
+  --colab-notebook unslothQwQ4bitGOOD.ipynb --cloud SECURE \
+  --titles titles.csv --limit 3 --output-dir out/gguf-colab-01
+```
+
+For the March bank of 1,565 words and custom pronunciations, substitute
+`--march-word-bank ../chuck2025/word_structures.py`. That profile uses the
+existing Hub tools and a 0.6 suggestion cutoff. The March bank is available
+in `patruff/chuck2025` at commit `783c529`.
+
+Both profiles use `parody-suggestions` before generation. Qwen writes Python
+actions in CodeAgent to call `word_phone_tool`, reads the observations, and
+selects its winner with `final_answer`. Each JSONL record contains the input
+suggestions, step-by-step code, model reasoning, tool returns, errors,
+observations, and the winner and runner-up. Scores are copied from observed
+tool returns. Missing pronunciations yield null. A score of 1.12 is possible
+in the archived Colab formula. The `passes_threshold` field is a separate
+diagnostic for aligned word swaps and never ranks humor.
 
 ## Project Structure
 

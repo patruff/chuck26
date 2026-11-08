@@ -98,8 +98,13 @@ def main():
     p.add_argument("--titles", type=Path, default=PIPELINE / "movie_titles_1995_1999.csv")
     p.add_argument("--limit", type=int, default=10)
     p.add_argument("--output-dir", type=Path, required=True, help="New directory for this run")
-    p.add_argument("--march-word-bank", type=Path, metavar="WORD_STRUCTURES.PY",
-                   help="Use the March humor-first draft and selection prompts with this historical word bank")
+    sources = p.add_mutually_exclusive_group()
+    sources.add_argument("--march-word-bank", type=Path, metavar="WORD_STRUCTURES.PY",
+                         help="Run CodeAgent with the March word bank and custom pronunciations")
+    sources.add_argument("--colab-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
+                         help="Run CodeAgent with the Colab funny_words list and 0.8 suggestion cutoff")
+    p.add_argument("--example-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
+                   help="With --march-word-bank, replay the saved Running Man cell and both finalists' word checks")
     p.add_argument("--gpu", default="NVIDIA GeForce RTX 4090,NVIDIA GeForce RTX 3090,NVIDIA RTX A6000,NVIDIA A40",
                    help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="COMMUNITY")
@@ -109,9 +114,12 @@ def main():
         p.error("Use an existing titles CSV, a positive limit and a positive timeout")
     if not os.getenv("RUNPOD_API_KEY"):
         p.error("RUNPOD_API_KEY is required")
-    if args.march_word_bank and not args.march_word_bank.is_file():
-        p.error("--march-word-bank must point to word_structures.py")
-    reasoning_budget, context = (2304, 8192) if args.march_word_bank else (768, 4096)
+    source = args.march_word_bank or args.colab_notebook
+    if source and not source.is_file():
+        p.error("The word bank or notebook must be a local file")
+    if args.example_notebook and (not args.march_word_bank or not args.example_notebook.is_file()):
+        p.error("--example-notebook requires a local notebook and --march-word-bank")
+    reasoning_budget, context = (1536, 16384) if source else (768, 4096)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     api = requests.Session()
     api.headers["Authorization"] = "Bearer " + os.environ["RUNPOD_API_KEY"]
@@ -121,11 +129,16 @@ def main():
         "pod_name": name, "model": MODEL, "revision": REVISION, "file": FILENAME,
         "sha256": SHA256, "image": IMAGE, "gpu_requested": args.gpu, "cloud": args.cloud,
         "started_at": utc_now(), "titles_file": args.titles.name, "limit": args.limit,
-        "temperature": 0.75 if args.march_word_bank else 0.4, "seed": 42,
+        "temperature": 0.7 if source else 0.4, "seed": 42,
         "reasoning_budget": reasoning_budget, "context": context,
     }
-    if args.march_word_bank:
-        meta.update(profile="march", word_bank_sha256=hashlib.sha256(args.march_word_bank.read_bytes()).hexdigest())
+    if source:
+        meta.update(profile="colab-codeagent" if args.colab_notebook else "march-codeagent",
+                    source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                    suggestion_cutoff=0.8 if args.colab_notebook else 0.6)
+    if args.example_notebook:
+        meta.update(profile="running-man-codeagent",
+                    notebook_sha256=hashlib.sha256(args.example_notebook.read_bytes()).hexdigest())
     manifest = args.output_dir / "run.json"
     def save():
         manifest.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -155,8 +168,11 @@ def main():
         save()
         env = {**os.environ, "LLAMA_API_KEY": server_key}
         del env["RUNPOD_API_KEY"]
-        if args.march_word_bank:
-            generator = [str(PIPELINE / "generate_march.py"), "--word-bank", str(args.march_word_bank)]
+        if source:
+            option = "--colab-notebook" if args.colab_notebook else "--word-bank"
+            generator = [str(PIPELINE / "generate_march.py"), option, str(source)]
+            if args.example_notebook:
+                generator.extend(["--example-notebook", str(args.example_notebook)])
         else:
             generator = [str(PIPELINE / "generate_with_reasoning.py"), "--no-adapter", "--max-new-tokens", "1280"]
         subprocess.run([
