@@ -14,6 +14,7 @@ RECENT = ROOT / "results/feedback-0c3cc72/results.jsonl.gz"
 
 def test_recent_feedback_run_and_full_trace_render(tmp_path):
     pairs = list(load_source(RECENT))
+    assert [p["id"] for p in load_source(RECENT.parent)] == [p["id"] for p in pairs]
     assert len(pairs) == 10 and pairs[0]["film"]["title"] == "The Running Man"
     assert {s["title"] for s in pairs[0]["sides"]} == {
         "The Cumming Klan",

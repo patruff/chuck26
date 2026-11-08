@@ -166,7 +166,8 @@ def load_source(path):
             None,
         )
         if newest:
-            return load_source(newest)
+            yield from load_source(newest)
+            return
     collection = (
         path.parent.name if path.name == "samples" or path.is_file() else path.name
     )
@@ -189,6 +190,13 @@ def load_source(path):
                 left["film"], (left["row"], a), (right["row"], b), collection
             )
             if pair:
+                samples = {location(a): left, location(b): right}
+                for side in pair["sides"]:
+                    sample = samples[side["source"]]
+                    if sample.get("failed_attempts"):
+                        side["trace"] = transcript(
+                            {**sample["row"], "prior_runs": sample["failed_attempts"]}
+                        )
                 yield pair
     else:
         opener = gzip.open if path.suffix == ".gz" else open

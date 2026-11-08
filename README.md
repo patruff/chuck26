@@ -28,7 +28,7 @@ To review another RunPod artifact, pass `--input /path/to/results.jsonl`, a comp
 
 The ranked list covers releases in 1990–2015 inclusive, ordered by number of ratings in MovieLens 32M. The **paired-film-review** Action checkpoints each side independently and can restore the sample files from a previous workflow run. [Film list](pipeline/film_lists/top200_1990_2015.csv) · [Ranking method](pipeline/film_lists/README.md) · [Recent feedback run](results/feedback-0c3cc72/README.md)
 
-When you are ready to fine-tune in the repo’s configured training environment, its existing DPO trainer accepts `python training/train_dpo.py --dataset reviews/reviewed_dpo.jsonl`. The review app itself only writes data.
+When you are ready to fine-tune in the repo’s configured training environment, its existing DPO trainer accepts `python training/train_dpo.py --dataset reviews/reviewed_dpo.jsonl`. The trainer renders the shared Qwen prompt and scores the two title completions. The review app itself only writes data.
 
 ## Qwen 27B on RunPod
 

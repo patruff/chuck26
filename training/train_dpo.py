@@ -15,7 +15,7 @@ Prerequisites:
 What this script does:
     1. Loads Qwen3-32B in 4-bit quantization with LoRA adapters
     2. Loads the DPO preference dataset from HuggingFace Hub
-    3. Verifies chat template format (no stray <think> blocks)
+    3. Renders title-only completions with the shared non-thinking prompt
     4. Trains with TRL DPOTrainer for 3 epochs
     5. Saves LoRA adapter locally to /workspace/dpo-output/final-adapter
     6. Pushes LoRA adapter to HuggingFace Hub as backup
@@ -37,9 +37,6 @@ import os
 import sys
 from pathlib import Path
 
-from datasets import load_dataset
-from trl import DPOConfig, DPOTrainer
-from unsloth import FastModel
 
 # =============================================================================
 # Configuration
@@ -77,6 +74,8 @@ def load_model():
     Uses FastModel (the current Unsloth API, not the older legacy API)
     which works for all model types (text, vision, MOE).
     """
+    from unsloth import FastModel
+
     print("=" * 60)
     print(" Loading Model")
     print("=" * 60)
@@ -115,6 +114,30 @@ def load_model():
 # Dataset Loading and Verification
 # =============================================================================
 
+def format_preference(row, tokenizer):
+    messages = row["prompt"]
+    kwargs = dict(tokenize=False, enable_thinking=False)
+    prompt = tokenizer.apply_chat_template(
+        messages, add_generation_prompt=True, **kwargs
+    )
+    result = {"prompt": prompt}
+    for name in ("chosen", "rejected"):
+        full = tokenizer.apply_chat_template(
+            messages + row[name], add_generation_prompt=False, **kwargs
+        )
+        if not full.startswith(prompt):
+            raise ValueError(
+                f"The {name} conversation does not share the rendered generation prompt."
+            )
+        completion = full[len(prompt) :]
+        if not completion.strip():
+            raise ValueError(f"Empty {name} completion.")
+        result[name] = completion
+    if result["chosen"] == result["rejected"]:
+        raise ValueError("The two preference completions are identical.")
+    return result
+
+
 def load_and_verify_dataset(tokenizer, dataset_name=DATASET_NAME):
     """Load the DPO dataset from Hub and verify chat template format.
 
@@ -128,6 +151,8 @@ def load_and_verify_dataset(tokenizer, dataset_name=DATASET_NAME):
     Thinking mode adds reasoning tokens that our dataset doesn't include,
     causing a train/inference mismatch (Pitfall 2 from research).
     """
+    from datasets import load_dataset
+
     print("=" * 60)
     print(" Loading Dataset")
     print("=" * 60)
@@ -152,35 +177,11 @@ def load_and_verify_dataset(tokenizer, dataset_name=DATASET_NAME):
     print(f"    rejected: {dataset[0]['rejected']}")
     print()
 
-    # -------------------------------------------------------------------------
-    # Chat template verification (Pitfall 2: Qwen3 thinking mode mismatch)
-    # -------------------------------------------------------------------------
-    # Qwen3 has dual-mode architecture: thinking (adds <think> blocks) and
-    # non-thinking (clean responses). Our DPO dataset was built without
-    # thinking tokens, so we MUST verify the template does not inject them.
-    # If <think> appears, training data format won't match inference format.
-    # -------------------------------------------------------------------------
-    print("  Verifying chat template (enable_thinking=False)...")
-    formatted = tokenizer.apply_chat_template(
-        dataset[0]["prompt"],
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False,
-    )
-    print(f"  Formatted template preview:")
-    print(f"    {formatted[:200]}...")
-    print()
-
-    if "<think>" in formatted:
-        print("  ERROR: Chat template contains <think> blocks!")
-        print("  This means Qwen3 thinking mode is active despite")
-        print("  enable_thinking=False. The DPO dataset does not")
-        print("  include thinking tokens -- training will fail.")
-        sys.exit(1)
-    else:
-        print("  PASS: No <think> blocks found in formatted template.")
-        print()
-
+    # Qwen can place an empty thinking delimiter in the common generation prefix.
+    # Give TRL explicit text pairs so only the two different title completions are scored.
+    dataset = dataset.map(lambda row: format_preference(row, tokenizer), remove_columns=dataset.column_names)
+    print("  Verified the shared prompt prefix for every chosen and rejected completion.")
+    print(f"  First chosen completion: {dataset[0]['chosen']!r}")
     return dataset
 
 
@@ -201,6 +202,8 @@ def train(model, tokenizer, dataset):
     - optim="paged_adamw_8bit": Prevents optimizer state OOM spikes by
       paging optimizer states to CPU when VRAM is tight.
     """
+    from trl import DPOConfig, DPOTrainer
+
     print("=" * 60)
     print(" Starting DPO Training")
     print("=" * 60)
