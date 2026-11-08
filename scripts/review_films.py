@@ -178,10 +178,14 @@ def load_source(path):
             b = a.with_name(a.name.replace("-a.json.gz", "-b.json.gz"))
             if not b.exists():
                 continue
-            with gzip.open(a, "rt", encoding="utf-8") as f:
-                left = json.load(f)
-            with gzip.open(b, "rt", encoding="utf-8") as f:
-                right = json.load(f)
+            try:
+                with gzip.open(a, "rt", encoding="utf-8") as f:
+                    left = json.load(f)
+                with gzip.open(b, "rt", encoding="utf-8") as f:
+                    right = json.load(f)
+            except FileNotFoundError:
+                # A regenerated pair may be between atomic checkpoint replacements.
+                continue
             if (
                 left["film"] != right["film"]
                 or left["signature"] != right["signature"]
@@ -390,7 +394,7 @@ def create_app(items, review_dir, refresh=None):
     @app.before_request
     def refresh_sources():
         nonlocal by_id, collections
-        if request.endpoint == "index" and refresh:
+        if request.endpoint in ("index", "vote", "import_reviews") and refresh:
             latest = refresh()
             if latest is not None:
                 new = {p["id"]: p for p in latest}
@@ -430,7 +434,10 @@ def create_app(items, review_dir, refresh=None):
     def vote(pair_id):
         p = by_id.get(pair_id)
         if not p:
-            abort(404)
+            abort(
+                409,
+                "This comparison has changed. Open the collection again to review its current options.",
+            )
         try:
             store.update(
                 [

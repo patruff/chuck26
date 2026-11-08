@@ -148,3 +148,14 @@ def test_replay_pending_projection_after_interruption(tmp_path):
         and recovered.export.read_text() == ""
         and not store.pending.exists()
     )
+
+
+def test_changed_catalog_rejects_a_vote_from_an_old_tab(tmp_path):
+    pairs = list(load_source(RECENT))
+    client = create_app(pairs, tmp_path, refresh=lambda: pairs[1:]).test_client()
+    response = client.post(
+        "/vote/" + pairs[0]["id"],
+        data={"choice": "a", "expected": "", "feedback": "stale"},
+    )
+    assert response.status_code == 409
+    assert (tmp_path / "reviewed_dpo.jsonl").read_bytes() == b""
