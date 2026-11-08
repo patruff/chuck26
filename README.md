@@ -32,6 +32,8 @@ The ranked list covers releases in 1990–2015 inclusive, ordered by number of r
 
 When you are ready to fine-tune in the repo’s configured training environment, its existing DPO trainer accepts `python training/train_dpo.py --dataset reviews/reviewed_dpo.jsonl`. The trainer renders the shared Qwen prompt and scores the two title completions. The review app itself only writes data.
 
+The [27B GGUF DPO smoke test](training/gguf_dpo/README.md) trains an output-layer LoRA on the same weights used for the parody runs. It saves a llama.cpp adapter and compares base and adapted inference on matched prompts.
+
 ## Qwen 27B on RunPod
 
 The 27B workflow uses the pinned 2025 suggested words and pronunciations. Run
