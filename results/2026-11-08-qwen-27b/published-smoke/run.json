@@ -1,0 +1,71 @@
+{
+  "model": "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+  "revision": "ab8d7bd81d03117501e4da60cccdff4c80f0eea0",
+  "file": "RVN-Q4_K_M-multilingual.gguf",
+  "sha256": "9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61",
+  "image": "ghcr.io/ggml-org/llama.cpp@sha256:859efa314dc34f1843a38ff28a4818aeac51a4cce125bdea4d2678aceba95469",
+  "gpu_requested": "NVIDIA GeForce RTX 4090,NVIDIA RTX A6000,NVIDIA L40S",
+  "cloud": "SECURE",
+  "started_at": "2026-11-08T06:57:45.934117+00:00",
+  "titles_file": "humor_sample_titles.csv",
+  "limit": 1,
+  "temperature": 0.7,
+  "seed": 42,
+  "reasoning_budget": 1536,
+  "context": 16384,
+  "profile": "humor-first-codeagent",
+  "source_sha256": "c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff",
+  "suggestion_cutoff": 0.6,
+  "word_bank_url": "https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py",
+  "preflight": {
+    "bank_url": "https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py",
+    "bank_sha256": "c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff",
+    "word_count": 1565,
+    "custom_pronunciations": 1565,
+    "suggestion_payload_sha256": "7280eb0ef3547a041c2dc0ee836cf0b43e7ee2fe12e4771d8660d65acc437f36",
+    "tool_revisions": {
+      "patruff/parody-suggestions": "8147e43f9acfb3af5123fd6fd329c112d8ff7a6b",
+      "patruff/word-phone": "044bccae4f60f213a2246e69c03558a52c6525ff"
+    },
+    "checks": [
+      {
+        "word": "running",
+        "compare_to": "cumming",
+        "suggestion_score": 0.665,
+        "word_phone_score": 1.0
+      },
+      {
+        "word": "man",
+        "compare_to": "klan",
+        "suggestion_score": 0.638,
+        "word_phone_score": 0.925
+      },
+      {
+        "word": "running",
+        "compare_to": "huning",
+        "suggestion_score": 0.83,
+        "word_phone_score": 1.0
+      },
+      {
+        "word": "running",
+        "compare_to": "hunning",
+        "suggestion_score": null,
+        "word_phone_score": null
+      }
+    ]
+  },
+  "notebook_sha256": "e2064d0a005db80e338a30c74feaa69270451318cef6d9d134de6c2d0f58276e",
+  "reference_cell": "GvGq8GcoGbCD",
+  "phonetic_floor": 0.6,
+  "changed_word_floor_measure": "parody-suggestions",
+  "auxiliary_measure": "word-phone",
+  "cost_per_hour": 0.89,
+  "ready_at": "2026-11-08T06:59:13.014500+00:00",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "generation_status": "complete",
+  "termination_confirmed": true,
+  "ended_at": "2026-11-08T07:01:06.233544+00:00",
+  "elapsed_seconds": 200.3,
+  "estimated_compute_usd": 0.0495,
+  "results_sha256": "41684d81898f1bc440aaac541a863f79ac8c60fd2606345ebd28b6255d0cefba"
+}

@@ -1,5 +1,7 @@
 # Parody Generator
 
+The Qwen 27B RunPod workflow loads the 1,565-word March 2025 bank with its custom pronunciations. This directory preserves an earlier 226-word copy. Use the [RunPod instructions](../README.md#qwen-27b-on-runpod) or [corrected notebook](../notebooks/Chuckles_RunPod.ipynb) to reproduce the Colab suggestions.
+
 A tool for generating creative parody titles using Cerebras AI, [smolagents](https://github.com/huggingface/smolagents), and phonetic similarity algorithms. Built for RLVR (Reinforcement Learning from Verifiable Rewards) dataset generation.
 
 ## Architecture

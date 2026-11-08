@@ -28,3 +28,7 @@ Open the HTML in a browser from this directory to read the pitches, expand the t
 The candidate export contains 14 unreviewed turns from seven titles after execution, nomination, phonetic-floor and thinking-budget checks. A passing phonetic score does not establish that a joke lands. The review labels determine which examples to keep.
 
 [Review HTML](humor-first-review.html) · [Raw traces](humor-first-traces.jsonl) · [Review-pending candidates](humor-first-candidates.jsonl) · [Run settings and costs](humor-first-run.json)
+
+## Fresh run from GitHub Actions
+
+The published workflow ran *The Running Man* from scratch on an RTX 4090. Qwen chose *The Cumming Klan* over *The Nutting Klan*. It described the winner as a sexual double meaning involving a secret society. The March tool scored *running → cumming* at 0.665 and *man → klan* at 0.638. The separate word-phone scores were 1.000 and 0.925. Both finalists cleared the 0.60 floor. The three-step run yielded two review-pending turns, terminated its pod, and cost an estimated $0.05. [GitHub Actions run](https://github.com/patruff/chuck26/actions/runs/42456795425) · [Trace](published-smoke/results.jsonl) · [Candidate turns](published-smoke/candidates.jsonl) · [Run settings and preflight checks](published-smoke/run.json)
