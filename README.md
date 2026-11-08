@@ -29,6 +29,8 @@ Download the **human-guidance** artifact from the Action. `prompt-revision.json`
 
 For the next round, copy the artifact's **next-feedback.txt** over `guidance/human-feedback.txt`. It carries forward your comments and the model's previous style instructions, adds the new pitches and choices, and leaves a blank `HUMAN_FEEDBACK:` under each movie. Fill in the movies you want to comment on and commit the file. Newer comments take priority when your preferences change.
 
+The first guided batch used the feedback “more edgy and wild.” Eight of ten movies had qualifying winners. The before-and-after table, recorded prompt revision and editable review file are in the [first guided run](results/2026-11-08-human-guidance/README.md).
+
 A checkout with the RunPod and 2025-bank credentials configured can run the same file locally.
 
 ```bash

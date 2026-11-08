@@ -118,5 +118,6 @@ def write_next_feedback(directory, revision):
             if os.getenv("GITHUB_RUN_ID") and os.getenv("GITHUB_REPOSITORY"):
                 location += f" (https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']})"
             example.append("Full reasoning and tool observations: " + location)
-            parts.extend(["MODEL_RUN:\n" + textwrap.indent("\n".join(example), "  "), "HUMAN_FEEDBACK:"])
+            readable = "\n".join(line.rstrip() for line in "\n".join(example).splitlines())
+            parts.extend(["MODEL_RUN:\n" + textwrap.indent(readable, "  "), "HUMAN_FEEDBACK:"])
     (directory / "next-feedback.txt").write_text("\n\n".join(parts) + "\n", encoding="utf-8")
