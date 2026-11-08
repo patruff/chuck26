@@ -102,5 +102,8 @@
   "action_run": 42489185189,
   "artifact_id": 13620707688,
   "shard": 1,
-  "completed_samples": 50
+  "completed_samples": 50,
+  "posted_bill_usd": 0.189003,
+  "posted_bill_seconds": 684.59,
+  "bill_checked_at": "2026-11-08T15:42:25.679642+00:00"
 }
