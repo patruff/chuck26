@@ -17,6 +17,7 @@ import uuid
 
 import requests
 from march_source import BANK_URL, NOTEBOOK, preflight, snapshot_bank
+from human_guidance import prepare_guidance
 
 PIPELINE = Path(__file__).resolve().parent
 MODEL = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF"
@@ -112,12 +113,28 @@ def main(private_dir):
     p.add_argument("--humor-first", action="store_true",
                    help="Use the humor-first batch cell, record drafts before verification, and use a 0.60 floor")
     p.add_argument("--drafts-from", type=Path, help="Reuse initial pre-score drafts from an earlier humor-first run")
+    p.add_argument("--human-guidance", type=Path, metavar="FEEDBACK.TXT",
+                   help="Have Qwen revise its creative instructions from examples and human comments before drafting")
     p.add_argument("--gpu", default="NVIDIA GeForce RTX 4090,NVIDIA GeForce RTX 3090,NVIDIA RTX A6000,NVIDIA A40",
                    help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="SECURE")
     p.add_argument("--timeout-mins", type=int, default=80)
     args = p.parse_args()
     production = not (args.base_only or args.colab_notebook)
+    plan = None
+    if args.human_guidance:
+        if not production or args.drafts_from:
+            p.error("--human-guidance requires the 2025 tools and fresh drafts")
+        if args.human_guidance.suffix.lower() != ".txt" or not args.human_guidance.is_file():
+            p.error("--human-guidance requires an existing UTF-8 .txt file")
+        from tokenizers import Tokenizer
+        from export_humor_candidates import pinned_tokenizer_file
+        raw_guidance = args.human_guidance.read_bytes()
+        try:
+            plan = prepare_guidance(raw_guidance, Tokenizer.from_file(pinned_tokenizer_file(MODEL, REVISION)))
+        except ValueError as exc:
+            p.error(str(exc))
+        args.humor_first = True
     if not production and (args.example_notebook or args.humor_first or args.preflight_only):
         p.error("The humor-first notebook and preflight require the 2025 bank")
     if production:
@@ -153,6 +170,9 @@ def main(private_dir):
         p.error("--drafts-from needs a local results JSONL and --humor-first")
     reasoning_budget, context = (1536, 16384) if source else (768, 4096)
     args.output_dir.mkdir(parents=True, exist_ok=False)
+    if plan:
+        (args.output_dir / "guidance.txt").write_bytes(raw_guidance)
+        (args.output_dir / "editor-input.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     api = requests.Session()
     api.headers["Authorization"] = "Bearer " + os.environ["RUNPOD_API_KEY"]
     server_key = secrets.token_urlsafe(32)
@@ -178,6 +198,8 @@ def main(private_dir):
                     changed_word_floor_measure="parody-suggestions", auxiliary_measure="word-phone")
     if args.drafts_from:
         meta["draft_source_sha256"] = hashlib.sha256(args.drafts_from.read_bytes()).hexdigest()
+    if plan:
+        meta.update(guidance_sha256=plan["feedback_sha256"], guidance_file=args.human_guidance.name)
     manifest = args.output_dir / "run.json"
     def save():
         manifest.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -217,6 +239,8 @@ def main(private_dir):
                 generator.append("--humor-first")
             if args.drafts_from:
                 generator.extend(["--drafts-from", str(args.drafts_from)])
+            if plan:
+                generator.extend(["--guidance-plan", str(args.output_dir / "editor-input.json")])
         else:
             generator = [str(PIPELINE / "generate_with_reasoning.py"), "--no-adapter", "--max-new-tokens", "1280"]
         subprocess.run([

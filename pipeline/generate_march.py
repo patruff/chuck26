@@ -14,6 +14,7 @@ from chuckles_prime.tools import load_parody_tools
 from smolagents import ActionStep, CodeAgent, OpenAIModel, Tool, load_tool
 from smolagents.monitoring import LogLevel
 from humor_batch import RecordDrafts, clears_phonetic_floor
+from human_guidance import BASE_INSTRUCTIONS, revise_prompt, write_next_feedback
 from march_source import BANK_SHA256, BANK_URL, NOTEBOOK
 
 # These Hub sources match the tool classes printed in the linked Colab's saved output.
@@ -190,7 +191,7 @@ def score_from_calls(title, candidate, observed):
 
 
 def run_agent(model, title, suggested, phones, analyzer, record, reference_prompt=None, humor_first=False,
-              suggester=None, previous_drafts=None):
+              suggester=None, previous_drafts=None, revision=None):
     if humor_first and suggester is None:
         raise ValueError("The humor-first floor requires the archived parody-suggestions tool")
     phone = WordPhoneTool(analyzer, phones, suggester if humor_first else None)
@@ -302,8 +303,7 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
 
     agent = CodeAgent(tools=agent_tools, model=model, additional_authorized_imports=["json"],
                       **({"max_print_outputs_length": 12000} if humor_first else {}),
-                      instructions="Write movie-title parodies. Favor the whole joke over a numeric score. "
-                                   "Use word_phone_tool and read its observations before deciding.",
+                      instructions=revision["applied_instructions"] if revision else BASE_INSTRUCTIONS,
                       step_callbacks=[capture], final_answer_checks=[validate], max_steps=7,
                       return_full_result=True, verbosity_level=LogLevel.OFF)
     task = f"""Create a funny parody of the movie title "{title}". Our audience likes absurd, dark or adult wordplay.
@@ -370,6 +370,11 @@ or recompute a minimum. Once you have seen the checks, call final_answer in one 
 Return final_answer with a dictionary: {"attempts":[{"title":"...","humor":8,"why":"..."}],
 "winner":"exact title","runner_up":"exact title","explanation":"why the final phrase works"}.
 Use the thinking channel for brainstorming. Keep executable actions in the CodeAgent code block."""
+    if revision:
+        record.update(guidance_sha256=revision["feedback_sha256"],
+                      applied_instructions_sha256=revision["applied_instructions_sha256"])
+        if revision["task_comments"]:
+            task += "\n\nThe human reviewer's comments behind the creative direction:\n" + "\n\n".join(revision["task_comments"])
     record.update(task=task, steps=steps, tool_calls=phone.calls)
     result = agent.run(task)
     if result.state == "max_steps_error" and observed:
@@ -422,8 +427,11 @@ def main():
     parser.add_argument("--example-notebook", type=Path, help="Running Man notebook, used with --word-bank")
     parser.add_argument("--humor-first", action="store_true")
     parser.add_argument("--drafts-from", type=Path, help="Reuse pre-check creative slates where present")
+    parser.add_argument("--guidance-plan", type=Path, help="Prepared human feedback from the RunPod launcher")
     parser.add_argument("--limit", type=int, required=True)
     args = parser.parse_args()
+    if args.guidance_plan and (not args.humor_first or args.drafts_from):
+        parser.error("--guidance-plan requires humor-first generation with fresh drafts")
     if args.example_notebook and not args.word_bank:
         parser.error("--example-notebook requires the March --word-bank")
     if args.humor_first:
@@ -461,6 +469,13 @@ def main():
                         max_tokens=3072, seed=42, extra_body={"repeat_penalty": 1.1,
                         "chat_template_kwargs": {"enable_thinking": True}})
 
+    output_dir = Path(args.output).parent
+    revision = None
+    if args.guidance_plan:
+        plan = json.loads(args.guidance_plan.read_text(encoding="utf-8"))
+        revision = revise_prompt(model, plan)
+        (output_dir / "prompt-revision.json").write_text(json.dumps(revision, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     def generate_title(title, seed):
         model.kwargs["seed"] = seed
         row = {"input_title": title, "model": args.base_model, "agent": "smolagents.CodeAgent",
@@ -480,7 +495,7 @@ def main():
             if prior and prior.get("suggestion_tool_results") != suggested:
                 row["draft_source_note"] = "Source suggestions differ; generated fresh pitches."
                 prior = None
-            run_agent(model, title, suggested, phones, analyzer, row, prompt, args.humor_first, suggester, prior)
+            run_agent(model, title, suggested, phones, analyzer, row, prompt, args.humor_first, suggester, prior, revision)
             if not any(s["reasoning"].strip() for s in row["steps"]):
                 raise ValueError("No model reasoning trace was captured")
         except Exception as exc:
@@ -504,6 +519,8 @@ def main():
             if row.get("fallback"):
                 label = f"no qualifying winner (fallback: {row['fallback']})"
             print(f"{title} → {label}", flush=True)
+    if revision:
+        write_next_feedback(output_dir, revision)
     if failed:
         raise SystemExit("One or more CodeAgent runs failed; inspect results.jsonl")
 

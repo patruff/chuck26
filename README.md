@@ -10,6 +10,32 @@ The 27B workflow uses the pinned 2025 suggested words and pronunciations. Run
 the corrected notebook in Colab or select **gguf-test** in GitHub Actions.
 [Open in Colab](https://colab.research.google.com/github/patruff/chuck26/blob/main/notebooks/Chuckles_RunPod.ipynb) · [Notebook source](notebooks/Chuckles_RunPod.ipynb) · [Ten-movie results and reasoning traces](results/2026-11-08-qwen-27b/README.md)
 
+## Teach Qwen what you find funny
+
+Edit [guidance/human-feedback.txt](guidance/human-feedback.txt) and commit it to `main`. That edit starts the [human-guidance Action](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml) and rents a RunPod GPU for ten fresh titles. You can also open the Action, choose **Run workflow**, and enter the path to another committed `.txt` file under `guidance/`. A single file is all the run needs from you.
+
+Put a prior result, its rationale, or a relevant excerpt of its trace under `MODEL_RUN:`. Add your own comments under `HUMAN_FEEDBACK:`. Both labels start at the beginning of a line. You can add as many example/comment pairs as fit in the model context.
+
+```text
+MODEL_RUN:
+Top Gun → Pop Gun. The pitch turned the dogfight into a children's party.
+HUMAN_FEEDBACK:
+The jokes should be more edgy and wild. The recent examples weren't extreme enough.
+```
+
+The same Qwen 27B model first reads the examples and your comments and writes a revised set of creative instructions. Every movie's smolagents system prompt uses that revision. Short feedback is also quoted verbatim in the generation task. Each movie starts with fresh drafts and uses the verified 2025 suggestions, exact-spelling tool checks, and inclusive 0.60 floor. The revision applies at inference time.
+
+Download the **human-guidance** artifact from the Action. `prompt-revision.json` shows the original and applied instructions. `results.jsonl` contains each draft, the model's reasoning, the actual system messages and phonetic observations. `candidates.jsonl` contains turns awaiting human review. The artifact also includes the original text and the exact input to the prompt editor. If you paste a very long trace, the editor retains its beginning and end and marks the omission. It preserves all human comments. Comments totaling more than 1,536 tokens inform the revision through the editor alone.
+
+For the next round, copy the artifact's **next-feedback.txt** over `guidance/human-feedback.txt`. It carries forward your comments and the model's previous style instructions, adds the new pitches and choices, and leaves a blank `HUMAN_FEEDBACK:` under each movie. Fill in the movies you want to comment on and commit the file. Newer comments take priority when your preferences change.
+
+A checkout with the RunPod and 2025-bank credentials configured can run the same file locally.
+
+```bash
+pip install -e '.[trace-export]' 'smolagents==1.24.0' 'huggingface-hub==0.36.0' 'setuptools<81'
+python pipeline/run_gguf_test.py --human-guidance guidance/human-feedback.txt --output-dir out/guided-01
+```
+
 ## Generating a DPO Dataset: Step-by-Step
 
 There are two workflows for reviewing parodies and building DPO data: **GitHub PR-based** and **Google Drive-based**. Both track provenance (model name, adapter/LoRA) for every candidate.

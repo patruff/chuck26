@@ -1,0 +1,15 @@
+MODEL_RUN:
+  The Running Man → The Cumming Man. The model imagined a hunted man ejaculating while sprinting away from armed pursuers. The changed word scored 0.665.
+  Toy Story → Hoe Story. The model leaned on the gardening-tool/slang double meaning and pitched a mockumentary. The changed word scored 0.605.
+  Top Gun → Pop Gun. The model pitched F-14s fighting with children's party noisemakers. The changed word scored 0.650.
+  Full traces: results/2026-11-08-qwen-27b/humor-first-traces.jsonl
+
+HUMAN_FEEDBACK:
+The jokes should be more edgy and wild. The recent examples weren't extreme enough.
+
+MODEL_RUN:
+  The original first-turn test picked The Hunning Man and attributed 0.83 to "hunning". That score belongs to "huning". Neither March tool scored the proposed spelling.
+  Source: results/2026-11-08-qwen-27b/humor-colab-first-turn.json
+
+HUMAN_FEEDBACK:
+I don't like the Hunning result since it doesn't make sense.

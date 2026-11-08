@@ -7,6 +7,11 @@ from pathlib import Path
 from common import clean_word
 
 
+def pinned_tokenizer_file(model, revision):
+    from huggingface_hub import hf_hub_download
+    return hf_hub_download(model, "GSQ-3bit/tokenizer.json", revision=revision)
+
+
 def outside_nominations(record):
     """Identify pair checks made outside the slate active at that point."""
     original = record["input_title"].split()
@@ -67,9 +72,8 @@ def main():
     parser.add_argument("--thinking-budget", type=int, default=1536)
     args = parser.parse_args()
     if args.run_manifest:
-        from huggingface_hub import hf_hub_download
         manifest = json.loads(args.run_manifest.read_text(encoding="utf-8"))
-        args.tokenizer_json = hf_hub_download(manifest["model"], "GSQ-3bit/tokenizer.json", revision=manifest["revision"])
+        args.tokenizer_json = pinned_tokenizer_file(manifest["model"], manifest["revision"])
         args.thinking_budget = manifest["reasoning_budget"]
     token_count = None
     if args.tokenizer_json:

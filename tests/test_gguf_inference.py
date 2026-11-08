@@ -174,7 +174,8 @@ def test_exact_profile_requires_the_unchanged_pair_for_both_finalists():
     assert all(c["returned"] in row["steps"][c["step"]-1]["observations"] for c in row["tool_calls"])
 
 
-def test_humor_first_records_the_jokes_before_looking_at_scores():
+@pytest.mark.parametrize("guided", [False, True])
+def test_humor_first_records_the_jokes_before_looking_at_scores(guided):
     from smolagents import Model
     from smolagents.models import ChatMessage, MessageRole
     from generate_march import run_agent
@@ -204,13 +205,21 @@ def test_humor_first_records_the_jokes_before_looking_at_scores():
     suggester.forward.side_effect = [json.dumps({"suggestions":[{"word":w, "similarity":v}]})
                                      for w, v in (("pork", 0.6), ("lark", 1.0))]
     row = {}
-    run_agent(Script(), "Park", {}, {}, analyzer, row, "scores > 0.8 and scores > 0.6", True, suggester)
+    revision = {"applied_instructions": "Give the joke higher stakes.", "task_comments": ["Go wilder."],
+                "applied_instructions_sha256": "fixture-style", "feedback_sha256": "fixture-input"} if guided else None
+    run_agent(Script(), "Park", {}, {}, analyzer, row, "scores > 0.8 and scores > 0.6", True, suggester,
+              revision=revision)
     assert row["state"] == "success" and row["parody"] == "Pork" and row["passes_threshold"]
     assert row["steps"][0]["error"] and row["draft_rounds"][0]["prior_phone_calls"] == 0
     assert row["draft_rounds"][0]["attempts"] == drafts
     assert row["finalist_checks"]["Pork"][0]["score"] == 0.6
     assert row["finalist_checks"]["Lark"][0]["score"] == 1.0
     assert "0.8" not in row["task"] and row["steps"][-1]["input_messages"]
+    if guided:
+        assert "Go wilder." in row["task"]
+        for step in row["steps"]:
+            system = step["input_messages"][0]
+            assert system["role"] == "system" and "Give the joke higher stakes." in str(system["content"])
 
 
 def test_humor_floor_requires_observed_nonnul_scores():
