@@ -23,13 +23,19 @@ def blind_transcript(row):
         "Suggested-word tool · patruff/parody-suggestions",
         f"2025 bank: {row['word_count']} words and pronunciations · inclusive floor 0.60",
     ]
+    for name, revision in row["tool_revisions"].items():
+        lines.append(f"{name} @ {revision}")
     for word, raw in row["suggestion_tool_results"].items():
         values = [
             f"{s['word']} ({s['similarity']})" for s in raw.get("suggestions", [])
         ]
-        lines.append(f"{word} → " + (", ".join(values) or "no suggestions"))
+        lines.append(
+            f"parody-suggestions(target={word!r}, min_similarity=0.60, bank=2025)"
+        )
+        lines.append("Returned: " + (", ".join(values) or "no suggestions"))
     lines.append("")
     checks = row["finalist_checks"]
+    calls = {(c["word"], c["compare_to"]): c for c in row["tool_calls"]}
     seen = set()
     pending = []
 
@@ -44,6 +50,16 @@ def blind_transcript(row):
                     f"word_phone_tool(word={c['word']!r}, compare_to={c['compare_to']!r})"
                 )
                 lines.append(json.dumps(c, ensure_ascii=False))
+                call = calls[c["word"], c["compare_to"]]
+                for field, tool in [
+                    ("tool_result", "word-phone"),
+                    ("suggestion_tool_result", "parody-suggestions"),
+                ]:
+                    if field in call:
+                        lines.append(
+                            f"{tool} returned "
+                            + json.dumps(call[field], ensure_ascii=False)
+                        )
         pending.clear()
 
     for step in row["steps"]:
