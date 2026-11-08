@@ -1,0 +1,86 @@
+name: Blind 27B film comparison
+on:
+  workflow_dispatch:
+    inputs:
+      dpo_run:
+        description: DPO smoke run with the sealed adapter
+        required: true
+        default: '42500861547'
+      key_id:
+        description: Suffix of the one-run BLIND_RECIPIENT_ secret
+        required: true
+      shards:
+        description: JSON array of film shards (0 through 4)
+        default: '[0,1,2,3,4]'
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  films:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards) }}
+    env:
+      LLAMA_REV: 7d7f0287530bc8981690f361d8c1627dbae1c99a
+      HF_REV: ab8d7bd81d03117501e4da60cccdff4c80f0eea0
+      SHARD: ${{ matrix.shard }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: sealed-dpo-test
+          path: private-input
+          run-id: ${{ inputs.dpo_run }}
+          github-token: ${{ github.token }}
+      - name: Prepare native runtime and phonetic tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/blind"
+          cd "$RUNNER_TEMP/blind"
+          if [ "$(df --output=avail -B1 . | tail -1)" -lt 26000000000 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          fi
+          mkdir llama
+          curl -fsSL --retry 4 "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/$LLAMA_REV" | tar xz -C llama --strip-components=1
+          cmake -S llama -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_CCACHE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON
+          cmake --build build -j 4 --target llama-server > build.log 2>&1 || { tail -60 build.log; exit 1; }
+          cd "$GITHUB_WORKSPACE"
+          pip install -q -e '.[trace-export]' 'smolagents==1.24.0' 'huggingface-hub==0.36.0' 'setuptools<81' cryptography
+      - name: Verify original weights and open the trained adapter
+        env:
+          RECIPIENT_PRIVATE_KEY: ${{ secrets[format('BLIND_RECIPIENT_{0}', inputs.key_id)] }}
+        run: |
+          target="$RUNNER_TEMP/blind"
+          python -m pipeline.blind_artifact prepare "$target" private-input/comparison.bin
+          unset RECIPIENT_PRIVATE_KEY
+          curl -fsSL --retry 4 "https://huggingface.co/0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF/resolve/$HF_REV/RVN-Q4_K_M-multilingual.gguf" -o "$target/model.gguf"
+          cd "$target"
+          echo '9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61  model.gguf' | sha256sum -c -
+      - name: Generate draft, tool and selection traces for both models
+        env:
+          CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
+        run: |
+          target="$RUNNER_TEMP/blind"
+          env -u CHUCKLES_2025_BANK_GZ "$target/build/bin/llama-server" --model "$target/model.gguf" --alias film-review --lora "$target/adapter.gguf" --lora-init-without-apply --host 127.0.0.1 --port 8080 --jinja --reasoning-format deepseek --reasoning-budget 48 -np 3 -c 6144 -t 4 -tb 4 >"$target/server.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          python pipeline/blind_film_run.py --shard "$SHARD" --work "$target" --report "$target/report.json"
+      - name: Seal completed trajectories
+        if: always()
+        env:
+          RECIPIENT_PRIVATE_KEY: ${{ secrets[format('BLIND_RECIPIENT_{0}', inputs.key_id)] }}
+        run: python -m pipeline.blind_artifact pack "$RUNNER_TEMP/blind" "$RUNNER_TEMP/films.bin"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blind-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/films.bin
+          if-no-files-found: warn
+          retention-days: 7
