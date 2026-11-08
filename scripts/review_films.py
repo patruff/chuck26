@@ -128,6 +128,8 @@ def review_pair(film, first, second, collection):
                 "seed": row.get("seed"),
                 "model": row.get("model"),
                 "guidance_sha256": row.get("guidance_sha256"),
+                "applied_instructions_sha256": row.get("applied_instructions_sha256"),
+                "decision_seed": (row.get("recovery") or {}).get("decision_seed"),
             }
         )
     pair_id = sha(
@@ -358,6 +360,8 @@ class ReviewStore:
                             "seed",
                             "passed",
                             "guidance_sha256",
+                            "applied_instructions_sha256",
+                            "decision_seed",
                         )
                     }
                     for s in pair["sides"]

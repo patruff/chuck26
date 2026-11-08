@@ -15,7 +15,7 @@ on:
         type: string
       prompt_snapshot:
         description: Committed results directory containing matching guidance.txt and prompt-revision.json
-        default: results/feedback-0c3cc72
+        default: results/film-adult-premises
         type: string
       ranks:
         description: Optional JSON array of specific MovieLens ranks (with shards set to [0])
@@ -36,7 +36,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       SHARD: ${{ matrix.shard }}
-      SNAPSHOT: ${{ inputs.prompt_snapshot || 'results/feedback-0c3cc72' }}
+      SNAPSHOT: ${{ inputs.prompt_snapshot || 'results/film-adult-premises' }}
       SPECIAL_RANKS: ${{ inputs.ranks || '[]' }}
       SHARDS: ${{ inputs.shards }}
     steps:
