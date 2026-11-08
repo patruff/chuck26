@@ -66,6 +66,15 @@ def blind_transcript(row):
         if step["kind"] != "Creative deliberation":
             append_receipts()
         lines.append(f"Step {step['step']} · {step['kind']}")
+        for prior in step.get("earlier_replies", []):
+            lines.append(
+                f"Earlier incomplete reply ({prior['finish_reason']}, limit {prior['settings']['max_tokens']})"
+            )
+            if prior["reasoning"]:
+                lines.append(
+                    "Model thinking\n<think>\n" + prior["reasoning"] + "\n</think>"
+                )
+            lines.append("Partial model response\n" + prior["model_output"])
         for message in step["input_messages"]:
             lines.append(
                 message["role"].capitalize() + " prompt\n" + message["content"]

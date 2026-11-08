@@ -3,6 +3,8 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import csv
+import copy
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -44,11 +46,11 @@ def object_schema(properties):
     }
 
 
-def model_call(messages, seed, scale, schema=None):
+def request_step(messages, seed, scale, schema, limit):
     settings = dict(
         temperature=0,
         seed=seed,
-        max_tokens=240,
+        max_tokens=limit,
         chat_template_kwargs={"enable_thinking": True},
     )
     body = dict(
@@ -71,8 +73,6 @@ def model_call(messages, seed, scale, schema=None):
     if "<think>" in text and "</think>" in text:
         before, text = text.split("</think>", 1)
         thinking = thinking or before.partition("<think>")[2]
-    if completion["finish_reason"] != "stop" or not text.strip():
-        raise ValueError("Model reply was incomplete")
     return dict(
         input_messages=messages,
         reasoning=thinking,
@@ -83,9 +83,61 @@ def model_call(messages, seed, scale, schema=None):
     )
 
 
+def model_call(messages, seed, scale, schema=None):
+    # Repeat the same request only when its actual response could not be used.
+    earlier = []
+    for limit in (240, 512, 768):
+        applied = copy.deepcopy(schema)
+        if applied and earlier:
+            for name in ("idea", "why"):
+                if name in applied["properties"]:
+                    applied["properties"][name]["maxLength"] = 180
+        step = request_step(messages, seed, scale, applied, limit)
+        text = step["model_output"].strip()
+        usable = bool(text) and step["finish_reason"] == "stop"
+        if schema and text:
+            try:
+                parsed = json.loads(text)
+                usable = isinstance(parsed, dict) and all(
+                    isinstance(parsed.get(k), str) and parsed[k].strip()
+                    for k in schema["required"]
+                )
+            except (ValueError, TypeError):
+                usable = False
+        if usable:
+            if earlier:
+                step["earlier_replies"] = earlier
+            return step
+        earlier.append(step)
+        print(
+            f"Incomplete model reply at {limit} tokens; finish reason {step['finish_reason']}.",
+            flush=True,
+        )
+    raise ValueError("Model did not return a complete reply after three attempts")
+
+
 def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
     title, rank = film["title"], int(film["rank"])
     seed = 97031 + rank
+    checkpoint = directory / f"{rank:03}-{scale}.json.gz"
+    if checkpoint.exists():
+        with gzip.open(checkpoint, "rt") as handle:
+            previous = json.load(handle)
+        if (
+            previous["film"] != film
+            or previous["adapter_scale"] != scale
+            or previous["adapter_sha256"] != ADAPTER_SHA
+            or previous["base_sha256"] != BASE_SHA
+            or previous["row"]["seed"] != seed
+            or previous["row"]["suggested_words"] != prepared[0]
+            or previous["row"]["applied_instructions_sha256"]
+            != hashlib.sha256(SYSTEM.encode()).hexdigest()
+            or previous["row"]["state"] != "success"
+        ):
+            raise ValueError(
+                "Restored blind trajectory does not match this configuration"
+            )
+        return
     suggested, raw = prepared
     messages = [
         {"role": "system", "content": SYSTEM},
@@ -308,6 +360,7 @@ def main():
         raise RuntimeError("Native server did not become ready")
     available = requests.get(SERVER + "/lora-adapters", timeout=12).json()
     assert len(available) == 1 and available[0]["id"] == 0
+    failures = []
     for scale in (0, 1):
         # Set the global configuration too; every inference request also specifies its own scale.
         requests.post(
@@ -322,8 +375,16 @@ def main():
                 )
                 for f in films
             ]
-            for task in tasks:
-                task.result()
+            for film, task in zip(films, tasks):
+                try:
+                    task.result()
+                except Exception as exc:
+                    failures.append(
+                        (film["rank"], scale, type(exc).__name__, str(exc)[:150])
+                    )
+    if failures:
+        raise RuntimeError(f"Unfinished film trajectories: {failures}")
+
     assert len(list(out.glob("*.json.gz"))) == 2 * len(films)
 
 

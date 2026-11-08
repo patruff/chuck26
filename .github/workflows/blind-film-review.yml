@@ -6,6 +6,9 @@ on:
         description: DPO smoke run with the sealed adapter
         required: true
         default: '42500861547'
+      resume_run:
+        description: Optional run with sealed completed sides from the same shard
+        type: string
       key_id:
         description: Suffix of the one-run BLIND_RECIPIENT_ secret
         required: true
@@ -40,6 +43,13 @@ jobs:
           path: private-input
           run-id: ${{ inputs.dpo_run }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: inputs.resume_run != ''
+        with:
+          name: blind-shard-${{ matrix.shard }}
+          path: restored-input
+          run-id: ${{ inputs.resume_run }}
+          github-token: ${{ github.token }}
       - name: Prepare native runtime and phonetic tools
         run: |
           mkdir -p "$RUNNER_TEMP/blind"
@@ -59,6 +69,7 @@ jobs:
         run: |
           target="$RUNNER_TEMP/blind"
           python -m pipeline.blind_artifact prepare "$target" private-input/comparison.bin
+          if [[ -f restored-input/films.bin ]]; then python -m pipeline.blind_artifact restore "$target" restored-input/films.bin; fi
           unset RECIPIENT_PRIVATE_KEY
           curl -fsSL --retry 4 "https://huggingface.co/0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF/resolve/$HF_REV/RVN-Q4_K_M-multilingual.gguf" -o "$target/model.gguf"
           cd "$target"

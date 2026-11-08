@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import io
 import os
+import re
 from pathlib import Path
 import zipfile
 
@@ -28,13 +29,22 @@ def open_sealed(path, key):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("mode", choices=["prepare", "pack"])
+    p.add_argument("mode", choices=["prepare", "pack", "restore"])
     p.add_argument("work", type=Path)
     p.add_argument("bundle", type=Path)
     args = p.parse_args()
     key = serialization.load_pem_private_key(
         os.environ.pop("RECIPIENT_PRIVATE_KEY").encode(), None
     )
+    if args.mode == "restore":
+        target = args.work / "samples"
+        target.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(open_sealed(args.bundle, key))) as z:
+            for name in z.namelist():
+                if not re.fullmatch(r"[0-9]{3}-[01]\.json\.gz", name):
+                    raise ValueError("Unrecognized checkpoint filename")
+                (target / name).write_bytes(z.read(name))
+        return
     if args.mode == "prepare":
         with zipfile.ZipFile(io.BytesIO(open_sealed(args.bundle, key))) as z:
             model = z.read("chuckles-27b-dpo.gguf")
