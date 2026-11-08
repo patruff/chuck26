@@ -11,6 +11,9 @@ on:
         default: guidance/human-feedback.txt
         required: true
         type: string
+      movie:
+        description: Optional single movie to test with this feedback (blank runs the ten-title batch)
+        type: string
 
 permissions:
   contents: read
@@ -40,7 +43,12 @@ jobs:
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
-        run: python pipeline/run_gguf_test.py --human-guidance "$FEEDBACK_FILE" --output-dir out/human-guidance
+          MOVIE: ${{ inputs.movie }}
+        shell: bash
+        run: |
+          args=()
+          if [[ -n "$MOVIE" ]]; then args+=(--title "$MOVIE"); fi
+          python pipeline/run_gguf_test.py --human-guidance "$FEEDBACK_FILE" --output-dir out/human-guidance "${args[@]}"
       - name: Export turns for human review
         run: python pipeline/export_humor_candidates.py out/human-guidance/results.jsonl out/human-guidance/candidates.jsonl --run-manifest out/human-guidance/run.json
       - uses: actions/upload-artifact@v4

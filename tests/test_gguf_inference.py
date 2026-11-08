@@ -273,3 +273,42 @@ def test_humor_mode_reports_both_historical_scores_and_uses_suggestion_for_floor
     assert unscored["score"] is None and unscored["word_phone_score"] == 1.0
     identity = tool.forward("Man", "man")
     assert identity["score"] == 1.0 and identity["score_basis"] == "identical spelling"
+
+
+def test_revised_slate_cannot_erase_a_verified_suggested_winner():
+    from smolagents import Model
+    from smolagents.models import ChatMessage, MessageRole
+    from generate_march import run_agent
+
+    def record(titles):
+        drafts = [{"title": t, "humor": 9-i, "why": "a comic premise"} for i,t in enumerate(titles)]
+        return (f"print(record_drafts({drafts!r}, {titles[:2]!r}))\n"
+                f"for title in {titles[:2]!r}:\n"
+                "    for a,b in zip('Toy Story'.split(),title.split()):\n"
+                "        print(word_phone_tool(a,b))")
+
+    class Script(Model):
+        custom_role_conversions = {}
+        def __init__(self):
+            super().__init__(model_id="fixture")
+            self.actions = iter([record(["Boy Toy","Hoe Story","Toy Gore"]),
+                                 record(["Hoe Store","Boy Toy","Hoe Story"]),
+                                 'final_answer({"winner":"Hoe Store","runner_up":"Boy Toy","explanation":"fallback"})',
+                                 'final_answer({"winner":"Hoe Story","runner_up":"Boy Toy","explanation":"original winner"})'])
+        def generate(self, messages, **kwargs):
+            return ChatMessage(role=MessageRole.ASSISTANT, content="<code>\n"+next(self.actions)+"\n</code>")
+
+    raw = {"toy":{"suggestions":[{"word":"hoe","similarity":0.605},{"word":"boy","similarity":0.65}]}}
+    pair_scores = {"boy":0.65,"toy":0.045,"hoe":0.605,"story":0.805,"store":0.385}
+    def suggest(target, word_list_str, **kwargs):
+        word = json.loads(word_list_str)[0]
+        return json.dumps({"suggestions":[{"word":word,"similarity":pair_scores[word]}]})
+    suggester, analyzer = Mock(), Mock()
+    suggester.forward.side_effect = suggest
+    analyzer.forward.return_value = '{"similarity":{"similarity":1.0}}'
+    row = {}
+    run_agent(Script(), "Toy Story", raw, {}, analyzer, row, "Creative phase", True, suggester)
+    assert "Hoe Story" in row["steps"][2]["error"]
+    assert row["state"] == "success" and row["qualifying_parody"] == "Hoe Story"
+    assert row["selected_draft_round"] == 1 and len(row["draft_rounds"]) == 2
+    assert row["finalist_checks"]["Hoe Story"][0]["suggestion_score"] == 0.605

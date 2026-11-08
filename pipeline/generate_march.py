@@ -257,10 +257,12 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
         if humor_first:
             if not phone.drafts.rounds:
                 raise ValueError("Record your drafts and two funniest finalists before final_answer")
-            latest = phone.drafts.rounds[-1]
-            answer = {**answer, "attempts": latest["attempts"]}
-            if set(latest["finalists"]) != {answer.get("winner"), answer.get("runner_up")}:
-                raise ValueError(f"Choose between the two recorded finalists: {latest['finalists']}")
+            pair = {answer.get("winner"), answer.get("runner_up")}
+            slates = phone.drafts.rounds
+            slate = next((s for s in reversed(slates) if set(s["finalists"]) == pair), None)
+            if slate is None:
+                raise ValueError(f"Choose a recorded pair from any round: {[s['finalists'] for s in slates]}")
+            answer = {**answer, "attempts": slate["attempts"], "selected_draft_round": slate["round"]}
         return parse_answer(answer)
 
     def validate(answer, memory, agent):
@@ -288,13 +290,15 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
                 original = [clean_word(w) for w in title.split()]
                 def passes(t):
                     return clears_phonetic_floor(original, [clean_word(w) for w in t.split()], observed, MIN_PHONETIC_SCORE)
-                if (listed and not listed.intersection(title_changes(title, result["winner"]))
-                        and listed.intersection(title_changes(title, result["runner_up"])) and passes(result["runner_up"])):
-                    raise ValueError("The suggested-word finalist clears 0.60. Choose it, or record a funnier "
-                                     "suggested-word finalist and verify its exact changes.")
+                eligible = {t for s in phone.drafts.rounds for t in s["finalists"] if passes(t)}
+                banked = {t for t in eligible if listed.intersection(title_changes(title, t))}
+                if banked and result["winner"] not in banked:
+                    raise ValueError(f"A suggested-word finalist clears 0.60: {sorted(banked)}. Choose one with "
+                                     "its recorded runner-up from the same round, or pitch and verify a better one.")
                 if not passes(result["winner"]):
-                    if passes(result["runner_up"]):
-                        raise ValueError("The proposed winner misses 0.60. Choose the eligible finalist or revise.")
+                    if eligible:
+                        raise ValueError(f"A prior finalist clears 0.60: {sorted(eligible)}. Choose it with "
+                                         "its recorded runner-up, or revise. A fallback would discard a verified title.")
                     nominated = {frozenset(d["finalists"]) for d in phone.drafts.rounds}
                     if len(nominated) < 2:
                         raise ValueError("Neither finalist clears 0.60. Revise the drafts and verify the new finalists.")
@@ -348,7 +352,8 @@ Use a Python loop over zip(original_title.split(), finalist.split()). Only test 
 search over cross-products of words. The phonetic tool returns a dict.
 Read the real observations on the next step. 0.60 is the inclusive floor; once a pair clears it, extra
 phonetic similarity earns no preference. Choose by humor. If both miss, record revised pitches and check again.
-If a second, different pair still misses, stop searching. Report your preferred fallback and explain that
+If a second, different pair still misses, stop searching. You may choose a verified pair from any earlier round.
+Only if no nominated title in any round qualifies, report your preferred fallback and explain that
 there is no qualifying winner. The report flags this result and keeps it out of training candidates.
 Your report attaches the recorded attempts and all scores automatically.
 Finish with final_answer({"winner":"exact finalist title", "runner_up":"other finalist", "explanation":"short reason"}).
@@ -421,6 +426,7 @@ Use the thinking channel for brainstorming. Keep executable actions in the CodeA
     winner = next(a for a in record["attempts"] if a["title"] == record["parody"])
     record["passes_threshold"] = winner["passes"]
     if humor_first:
+        record["selected_draft_round"] = answer["selected_draft_round"]
         record["passes_threshold"] = winner["passes"] and all(
             c["score"] is not None and c["score"] >= MIN_PHONETIC_SCORE for c in record["finalist_checks"][record["parody"]])
         record["qualifying_parody"] = record["parody"] if record["passes_threshold"] else None

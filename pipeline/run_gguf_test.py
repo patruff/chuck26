@@ -2,6 +2,7 @@
 """Run the Qwen3.8 27B GGUF on one ephemeral RunPod GPU and save Chuckles results."""
 
 import argparse
+import csv
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -98,7 +99,9 @@ def wait_ready(api, pod_id, endpoint, headers, deadline):
 
 def main(private_dir):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--titles", type=Path, help="Input CSV with a title column")
+    movies = p.add_mutually_exclusive_group()
+    movies.add_argument("--titles", type=Path, help="Input CSV with a title column")
+    movies.add_argument("--title", help="Run just this movie")
     p.add_argument("--limit", type=int, default=10)
     p.add_argument("--output-dir", type=Path, help="New directory for this run")
     p.add_argument("--preflight-only", action="store_true", help="Verify the 2025 bank and tools on CPU and exit")
@@ -153,6 +156,13 @@ def main(private_dir):
             return
     if args.output_dir is None:
         p.error("A GPU run requires --output-dir")
+    if args.title is not None:
+        if not args.title.strip():
+            p.error("--title requires a nonempty movie title")
+        args.titles = private_dir / "single-movie.csv"
+        with args.titles.open("w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows([["title"], [args.title.strip()]])
+        args.limit = 1
     if args.titles is None:
         args.titles = PIPELINE / ("humor_sample_titles.csv" if production else "movie_titles_1995_1999.csv")
     if args.limit < 1 or args.timeout_mins < 1 or not args.titles.is_file():
@@ -198,6 +208,8 @@ def main(private_dir):
                     changed_word_floor_measure="parody-suggestions", auxiliary_measure="word-phone")
     if args.drafts_from:
         meta["draft_source_sha256"] = hashlib.sha256(args.drafts_from.read_bytes()).hexdigest()
+    if args.title:
+        meta["title"] = args.title.strip()
     if plan:
         meta.update(guidance_sha256=plan["feedback_sha256"], guidance_file=args.human_guidance.name)
     manifest = args.output_dir / "run.json"

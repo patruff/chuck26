@@ -44,3 +44,10 @@ def test_transcript_exposes_complete_real_steps_and_lookup_before_drafts(tmp_pat
     assert text.index("Executed `word_phone_tool") < text.index("Choose the better joke.")
     assert '{"suggestion_score": 0.65}' in text and "toy → boy (listed)" in text and "<think>" in text
     assert "1 / 1" in (tmp_path/"TRACE-INDEX.md").read_text()
+
+
+def test_legacy_trace_displays_the_verified_winner_or_the_fallback():
+    from trace_review import recorded_choices
+    assert recorded_choices({"parody":"Hoe Story","passes_threshold":True}) == ("Hoe Story",None)
+    assert recorded_choices({"parody":"Dirty Dampening","passes_threshold":False}) == (None,"Dirty Dampening")
+    assert recorded_choices({"error":"No valid final"}) == (None,None)

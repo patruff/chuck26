@@ -1,5 +1,6 @@
 """Offline regressions for the default bank, bundled notebook, and exact-spelling gate."""
 import base64
+import csv
 import gzip
 import hashlib
 import json
@@ -57,13 +58,14 @@ def test_hunning_cannot_inherit_huning_score():
     assert not clears_phonetic_floor(["running"], ["hunning"], {("running","hunning"):wrong}, 0.60)
 
 
-def test_default_launch_uses_bundled_colab_and_bank_before_renting(tmp_path, monkeypatch):
+@pytest.mark.parametrize("movie", [None, "Movie, The"])
+def test_default_launch_uses_bundled_colab_and_bank_before_renting(tmp_path, monkeypatch, movie):
     bank = tmp_path / "verified.py"
     bank.write_text("private fixture")
     output = tmp_path / "run"
     monkeypatch.setenv("RUNPOD_API_KEY", "fixture")
     monkeypatch.setenv("CHUCKLES_2025_BANK_GZ", "fixture")
-    monkeypatch.setattr(sys, "argv", ["run", "--output-dir", str(output)])
+    monkeypatch.setattr(sys, "argv", ["run", "--output-dir", str(output)] + (["--title", movie] if movie else []))
     monkeypatch.setattr(run_gguf_test, "snapshot_bank", lambda explicit, directory: bank)
     calls = []
     def check(path):
@@ -89,7 +91,12 @@ def test_default_launch_uses_bundled_colab_and_bank_before_renting(tmp_path, mon
     assert command[1].endswith("generate_march.py") and "--humor-first" in command
     assert command[command.index("--example-notebook")+1] == str(march_source.NOTEBOOK)
     assert command[command.index("--word-bank")+1] == str(bank)
-    assert command[command.index("--titles")+1].endswith("humor_sample_titles.csv")
+    titles = Path(command[command.index("--titles")+1])
+    if movie:
+        assert list(csv.DictReader(titles.read_text().splitlines())) == [{"title": movie}]
+        assert command[command.index("--limit")+1] == "1"
+    else:
+        assert titles.name == "humor_sample_titles.csv"
     assert "CHUCKLES_2025_BANK_GZ" not in child.call_args.kwargs["env"]
     assert json.loads((output/"run.json").read_text())["termination_confirmed"]
     terminate.assert_called_once_with(api, "fixture")

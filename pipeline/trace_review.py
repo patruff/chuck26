@@ -13,6 +13,13 @@ def bank_use(row, title):
     return [(a, b, (a, b) in listed) for a, b in changes]
 
 
+def recorded_choices(row):
+    # Older humor-first traces stored only the selected title and its pass flag.
+    winner = row.get("qualifying_parody", row.get("parody") if row.get("passes_threshold") else None)
+    fallback = row.get("fallback", row.get("parody") if row.get("passes_threshold") is False else None)
+    return winner, fallback
+
+
 def block(text, language="text"):
     ticks = "`" * max([3] + [len(v) + 1 for v in re.findall(r"`+", text)])
     text = "\n".join(line.rstrip() for line in text.splitlines())
@@ -43,9 +50,10 @@ def steps_text(steps, calls):
 
 def transcript(row):
     title = row["input_title"]
-    lines = [f"# {title}", f"Qualifying parody: {row.get('qualifying_parody') or '(none)'}"]
-    if row.get("fallback"):
-        lines.append("Fallback: " + row["fallback"])
+    winner, fallback = recorded_choices(row)
+    lines = [f"# {title}", f"Qualifying parody: {winner or '(none)'}"]
+    if fallback:
+        lines.append("Fallback: " + fallback)
     lines += ["## Initial suggestion lookup", "The controller ran the archived parody-suggestions tool before "
               "Qwen drafted. These are the candidates returned for each original word."]
     for word, result in row.get("suggestion_tool_results", {}).items():
@@ -103,7 +111,8 @@ def write_transcripts(results, directory):
         path = traces / f"{i:02d}-{slug}.md"
         path.write_text(transcript(row), encoding="utf-8")
         changes = bank_use(row, row.get("parody"))
-        choice = row.get("qualifying_parody") or (row.get("fallback") or "No result") + " (no qualifying winner)"
+        winner, fallback = recorded_choices(row)
+        choice = winner or (fallback or "No result") + " (no qualifying winner)"
         index.append(f"| [{title}](transcripts/{path.name}) | {choice} | "
                      f"{sum(hit for _, _, hit in changes)} / {len(changes)} | {len(row.get('tool_calls', []))} |")
     (directory / "TRACE-INDEX.md").write_text("\n".join(index) + "\n", encoding="utf-8")
