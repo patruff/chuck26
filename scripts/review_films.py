@@ -18,7 +18,11 @@ from flask import Flask, abort, redirect, render_template, request, send_file, u
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pipeline"))
 from trace_review import transcript
-from blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs
+
+if __package__:
+    from .blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs
+else:
+    from blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs
 
 DEFAULT_SOURCES = [
     ROOT / "results" / "movielens-200" / "samples",
@@ -291,7 +295,7 @@ class ReviewStore:
             or rejected["title"] != r["rejected"][0]["content"]
         ):
             raise ValueError("The DPO row does not match its recorded choices.")
-        return dict(
+        decision = dict(
             pair_id=r["pair_id"],
             film=r["film"],
             prompt=r["prompt"],
@@ -300,6 +304,12 @@ class ReviewStore:
             choice=choice,
             sides=[chosen, rejected] if choice == "a" else [rejected, chosen],
         )
+        if r.get("blind"):
+            first = r.get("first_choice", choice)
+            if first not in ("a", "b", "tie", "neither"):
+                raise ValueError("Invalid first blind vote")
+            decision.update(blind=True, first_choice=first)
+        return decision
 
     @contextmanager
     def lock(self):
@@ -339,6 +349,10 @@ class ReviewStore:
                     "rejected_trace": rejected,
                 }
             )
+            if r.get("blind"):
+                out[-1].update(
+                    blind=True, first_choice=r.get("first_choice", r["choice"])
+                )
         write_lines(self.export, out)
 
     def finish_update(self):
@@ -348,7 +362,7 @@ class ReviewStore:
         self.project(records)
         self.pending.unlink()
 
-    def update(self, updates):
+    def update(self, updates, first_choices=None):
         with self.lock():
             if self.pending.exists():
                 self.finish_update()
@@ -396,7 +410,11 @@ class ReviewStore:
                 }
                 if pair.get("blind"):
                     records[pair["id"]].update(
-                        blind=True, first_choice=current.get("first_choice", choice)
+                        blind=True,
+                        first_choice=current.get(
+                            "first_choice",
+                            (first_choices or {}).get(pair["id"], choice),
+                        ),
                     )
             write_lines(self.pending, records.values())
             self.finish_update()
@@ -512,6 +530,7 @@ def create_app(items, review_dir, refresh=None):
         try:
             records = store.read()
             changes = []
+            first_choices = {}
             seen = set()
             for line in upload:
                 if not line.strip():
@@ -534,6 +553,10 @@ def create_app(items, review_dir, refresh=None):
                     else ("a", "b", "neither")
                 ) or not isinstance(rec["feedback"], str):
                     raise ValueError("Invalid vote")
+                if p.get("blind"):
+                    first_choices[key] = rec.get("first_choice", rec["choice"])
+                    if first_choices[key] not in ("a", "b", "tie", "neither"):
+                        raise ValueError("Invalid first blind vote")
                 prior = records.get(key)
                 if prior:
                     if (prior["choice"], prior["feedback"]) != (
@@ -543,7 +566,7 @@ def create_app(items, review_dir, refresh=None):
                         raise ConflictingReview("Existing vote conflicts with upload")
                 else:
                     changes.append((p, rec["choice"], rec["feedback"], ""))
-            store.update(changes)
+            store.update(changes, first_choices)
         except ConflictingReview as e:
             abort(409, str(e))
         except (ValueError, KeyError, TypeError) as e:
