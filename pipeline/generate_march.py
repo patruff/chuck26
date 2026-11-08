@@ -12,6 +12,7 @@ from generate_with_reasoning import read_titles
 from chuckles_prime.tools import load_parody_tools
 from smolagents import ActionStep, CodeAgent, OpenAIModel, Tool, load_tool
 from smolagents.monitoring import LogLevel
+from humor_batch import RecordDrafts, clears_phonetic_floor
 
 # These Hub sources match the tool classes printed in the linked Colab's saved output.
 COLAB_TOOLS = {"patruff/parody-suggestions": "39102988c0309dd7cb96d196f671c0e5ef9c70aa",
@@ -19,6 +20,7 @@ COLAB_TOOLS = {"patruff/parody-suggestions": "39102988c0309dd7cb96d196f671c0e5ef
 RUNNING_MAN_TOOLS = {"patruff/parody-suggestions": "8147e43f9acfb3af5123fd6fd329c112d8ff7a6b",
                      "patruff/word-phone": "044bccae4f60f213a2246e69c03558a52c6525ff"}
 RUNNING_MAN_CELL = "tbAjK5rX4tjo"
+HUMOR_BATCH_CELL = "GvGq8GcoGbCD"
 
 
 class ReasoningGGUFModel(OpenAIModel):
@@ -29,12 +31,12 @@ class ReasoningGGUFModel(OpenAIModel):
         return False
 
 
-def running_man_prompt(notebook, title, suggestions):
+def running_man_prompt(notebook, title, suggestions, cell_id=RUNNING_MAN_CELL):
     """Render the saved cell's two substitutions without evaluating notebook code."""
     cells = json.loads(notebook.read_text(encoding="utf-8"))["cells"]
-    cell = next((c for c in cells if c.get("metadata", {}).get("id") == RUNNING_MAN_CELL), None)
+    cell = next((c for c in cells if c.get("metadata", {}).get("id") == cell_id), None)
     if cell is None:
-        raise ValueError(f"Expected Running Man demonstration cell {RUNNING_MAN_CELL} in {notebook.name}")
+        raise ValueError(f"Expected Running Man demonstration cell {cell_id} in {notebook.name}")
     module = ast.parse("".join(cell["source"]))
     fn = next(n for n in module.body if isinstance(n, ast.FunctionDef) and n.name == "generate_parody")
     template = next(n.value for n in ast.walk(fn) if isinstance(n, ast.Assign)
@@ -96,14 +98,30 @@ class WordPhoneTool(Tool):
               "compare_to": {"type": "string", "description": "Proposed replacement word"}}
     output_type = "object"
 
-    def __init__(self, analyzer, phones):
+    def __init__(self, analyzer, phones, suggester=None):
         super().__init__()
         self.analyzer = analyzer
         self.phones = phones
         self.calls = []
+        self.drafts = None
+        self.suggester = suggester
+        if suggester is not None:
+            self.description = ("Check the original word and replacement with both Colab tools. The returned dict "
+                                "has suggestion_score (the March 0.60 selection measure), word_phone_score "
+                                "(a separate rhyme/length/stress check), and score (the decision value). "
+                                "An unchanged word is marked identical.")
 
     def forward(self, word: str, compare_to: str) -> dict:
+        if self.drafts is not None and not self.drafts.rounds:
+            raise ValueError("Call record_drafts with your pitches and two funniest titles before checking sounds")
         word, compare_to = clean_word(word), clean_word(compare_to)
+        if self.drafts is not None:
+            eligible = {(clean_word(o), clean_word(r))
+                        for t in self.drafts.rounds[-1]["finalists"]
+                        for o, r in zip(self.drafts.original.split(), t.split())}
+            if (word, compare_to) not in eligible:
+                raise ValueError("Check the words of the two nominated titles. Record a revised shortlist "
+                                 "before testing replacements outside those titles.")
         raw = json.loads(self.analyzer.forward(word=word, compare_to=compare_to,
                                                **({"custom_phones": self.phones} if self.phones else {})))
         similarity = raw.get("similarity") or {}
@@ -113,11 +131,23 @@ class WordPhoneTool(Tool):
             "phones": (raw.get("analysis") or raw).get("phones"),
             "replacement_phones": (comparison.get("analysis") or comparison).get("phones"),
         }
+        suggestion_raw = None
+        if self.suggester is not None:
+            suggestion_raw = json.loads(self.suggester.forward(
+                target=word, word_list_str=json.dumps([compare_to]), min_similarity="0.0",
+                **({"custom_phones": self.phones} if self.phones else {})))
+            candidate = next((c for c in suggestion_raw.get("suggestions", []) if c["word"] == compare_to), {})
+            observation.update(word_phone_score=observation["score"], suggestion_score=candidate.get("similarity"),
+                               score_basis="identical spelling" if word == compare_to else "parody-suggestions")
+            observation["score"] = 1.0 if word == compare_to else observation["suggestion_score"]
         if observation["score"] is None:
             observation["error"] = raw.get("error") or comparison.get("error") or "Unscorable comparison"
         rendered = json.dumps(observation, ensure_ascii=False)
         self.calls.append({"word": word, "compare_to": compare_to, "score": observation["score"],
                            "returned": rendered, "tool_result": raw})
+        if suggestion_raw is not None:
+            self.calls[-1].update(suggestion_tool_result=suggestion_raw, suggestion_score=observation["suggestion_score"],
+                                  word_phone_score=observation["word_phone_score"], score_basis=observation["score_basis"])
         return observation
 
 
@@ -157,10 +187,27 @@ def score_from_calls(title, candidate, observed):
             "passes": aligned and bool(swaps) and all(s["score"] is not None and s["score"] >= MIN_PHONETIC_SCORE for s in swaps)}
 
 
-def run_agent(model, title, suggested, phones, analyzer, record, reference_prompt=None):
-    phone = WordPhoneTool(analyzer, phones)
+def run_agent(model, title, suggested, phones, analyzer, record, reference_prompt=None, humor_first=False,
+              suggester=None, previous_drafts=None):
+    if humor_first and suggester is None:
+        raise ValueError("The humor-first floor requires the archived parody-suggestions tool")
+    phone = WordPhoneTool(analyzer, phones, suggester if humor_first else None)
+    agent_tools = [phone]
+    if humor_first:
+        phone.drafts = RecordDrafts(title, phone.calls)
+        agent_tools.append(phone.drafts)
+        record["draft_rounds"] = phone.drafts.rounds
+        if previous_drafts:
+            first = previous_drafts["draft_rounds"][0]
+            if first["prior_phone_calls"] != 0:
+                raise ValueError("The source slate must predate phonetic checks")
+            phone.drafts.forward(first["attempts"], first["finalists"])
+            phone.drafts.rounds[0].update(step=0, source="prior creative phase")
+            record["prior_creative_seed"] = previous_drafts.get("seed", 42)
+            record["prior_creative_steps"] = [s for s in previous_drafts["steps"] if s["step"] <= first["step"]]
     steps = []
     observed = {}
+    final_evidence = {}
     step_offset = 0
 
     def capture(step, **kwargs):
@@ -188,12 +235,31 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
                       "code": step.code_action, "observations": notes,
                       "finish_reason": choice.finish_reason if choice else None,
                       "error": str(step.error) if step.error else None, "final": step.is_final_answer})
+        if humor_first:
+            for draft_round in phone.drafts.rounds:
+                draft_round.setdefault("step", number)
+            if step.model_input_messages:
+                steps[-1]["input_messages"] = model._prepare_completion_kwargs(
+                    step.model_input_messages, custom_role_conversions=model.custom_role_conversions,
+                    convert_images_to_image_urls=True)["messages"]
         print(f"{title}: agent step {number}, {len(calls)} tool checks, final={step.is_final_answer}", flush=True)
         if step.error:
             print(f"  {str(step.error)[:300]}", flush=True)
 
+    def recorded_answer(answer):
+        if isinstance(answer, str):
+            answer = json.loads(answer)
+        if humor_first:
+            if not phone.drafts.rounds:
+                raise ValueError("Record your drafts and two funniest finalists before final_answer")
+            latest = phone.drafts.rounds[-1]
+            answer = {**answer, "attempts": latest["attempts"]}
+            if set(latest["finalists"]) != {answer.get("winner"), answer.get("runner_up")}:
+                raise ValueError(f"Choose between the two recorded finalists: {latest['finalists']}")
+        return parse_answer(answer)
+
     def validate(answer, memory, agent):
-        result = parse_answer(answer)
+        result = recorded_answer(answer)
         if not observed:
             raise ValueError("Print the phonetic tool results and read the observation before selecting a winner")
         if reference_prompt:
@@ -213,14 +279,27 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
                 action = "\n".join(f"print(word_phone_tool(word={o!r}, compare_to={r!r}))" for o, r in missing)
                 raise ValueError("These finalist pairs have no prior observation. Execute these calls in one "
                                  "Python action, read the returns, then call final_answer:\n" + action)
+            if humor_first:
+                original = [clean_word(w) for w in title.split()]
+                def passes(t):
+                    return clears_phonetic_floor(original, [clean_word(w) for w in t.split()], observed, MIN_PHONETIC_SCORE)
+                if not passes(result["winner"]):
+                    if passes(result["runner_up"]):
+                        raise ValueError("The proposed winner misses 0.60. Choose the eligible finalist or revise.")
+                    nominated = {frozenset(d["finalists"]) for d in phone.drafts.rounds}
+                    if len(nominated) < 2:
+                        raise ValueError("Neither finalist clears 0.60. Revise the drafts and verify the new finalists.")
+            final_evidence.update(observed)
             return True
         for a in result["attempts"]:
             assessed = score_from_calls(title, a["title"], observed)
             if a["title"] == result["winner"] and not assessed["swaps"]:
                 raise ValueError("Check at least one changed word in the winning title with word_phone_tool")
+        final_evidence.update(observed)
         return True
 
-    agent = CodeAgent(tools=[phone], model=model, additional_authorized_imports=["json"],
+    agent = CodeAgent(tools=agent_tools, model=model, additional_authorized_imports=["json"],
+                      **({"max_print_outputs_length": 12000} if humor_first else {}),
                       instructions="Write movie-title parodies. Favor the whole joke over a numeric score. "
                                    "Use word_phone_tool and read its observations before deciding.",
                       step_callbacks=[capture], final_answer_checks=[validate], max_steps=7,
@@ -239,7 +318,41 @@ After checking the words, call final_answer with a dictionary in this shape:
 "explanation":"why this wins, what changed and what you kept"}}. The pipeline attaches the actual scores."""
     if reference_prompt:
         record["reference_prompt"] = reference_prompt
-        task = reference_prompt + """
+        task = reference_prompt
+        if humor_first:
+            task = task.replace("scores > 0.8", "scores >= 0.6").replace("scores > 0.6", "scores >= 0.6")
+            task += """
+
+Working with CodeAgent:
+First call record_drafts(attempts, finalists) with three or four dicts {"title": ..., "humor": 8, "why": ...}
+and the two titles you personally find funniest. Save the full premises before making any verifier call.
+Go for the uncomfortable, dirty or dark double meaning when it makes a better joke. Give the image or premise
+that made you laugh. You can invent a better swap than the suggestions.
+For each word of both nominees, execute print(word_phone_tool(word=original, compare_to=replacement)).
+Use a Python loop over zip(original_title.split(), finalist.split()). Only test these nominees; do not
+search over cross-products of words. The phonetic tool returns a dict.
+Read the real observations on the next step. 0.60 is the inclusive floor; once a pair clears it, extra
+phonetic similarity earns no preference. Choose by humor. If both miss, record revised pitches and check again.
+If a second, different pair still misses, stop searching. Report your preferred fallback and explain that
+there is no qualifying winner. The report flags this result and keeps it out of training candidates.
+Your report attaches the recorded attempts and all scores automatically.
+Finish with final_answer({"winner":"exact finalist title", "runner_up":"other finalist", "explanation":"short reason"}).
+Use the thinking channel for your creative comparisons and reconsideration after verification."""
+            if suggester is not None:
+                task += """
+
+Scoring detail: the supplied candidate similarities are from parody-suggestions. For every proposed
+replacement, word_phone_tool executes that same scoring code on the pair and separately runs word-phone.
+Use suggestion_score for the inclusive 0.60 floor on changed words. An unchanged word is an identity.
+The separate word_phone_score can be 1.0 for a rhyme: do not use it to substitute for the candidate similarity.
+Quote both by name if giving numbers. Once a change clears 0.60, choose the funniest whole phrase."""
+            if previous_drafts:
+                task += ("\nYour initial drafts and nominations were already recorded before any phonetic checks. "
+                         "Use these original pitches to start verification. Do not record a duplicate slate. "
+                         "If both fail the floor or you need a better eligible alternative, revise and check again.\n"
+                         + json.dumps({"attempts": first["attempts"], "finalists": first["finalists"]}, ensure_ascii=False))
+        else:
+            task += """
 
 CodeAgent execution and return format:
 Use the provided word_phone_tool directly. Call word_phone_tool(word=ORIGINAL, compare_to=REPLACEMENT),
@@ -268,22 +381,28 @@ Use the thinking channel for brainstorming. Keep executable actions in the CodeA
     record["state"] = result.state
     if result.state != "success" or not any(step["final"] for step in steps):
         raise RuntimeError(f"CodeAgent did not reach a checked final_answer ({result.state})")
-    answer = parse_answer(result.output)
+    answer = recorded_answer(result.output)
     finalists = (answer["winner"], answer["runner_up"])
     attempts = []
     for a in answer["attempts"]:
         if reference_prompt and a["title"] not in finalists:
             attempts.append({**a, "finalist": False})
         else:
-            attempts.append({**a, **score_from_calls(title, a["title"], observed), "finalist": a["title"] in finalists})
+            attempts.append({**a, **score_from_calls(title, a["title"], final_evidence), "finalist": a["title"] in finalists})
     record.update(parody=answer["winner"], runner_up=answer["runner_up"], explanation=answer["explanation"],
                   attempts=attempts)
     if reference_prompt:
+        fields = ("word", "compare_to", "score", "step")
+        if humor_first and suggester is not None:
+            fields += ("suggestion_score", "word_phone_score", "score_basis")
         record["finalist_checks"] = {
-            t: [{k: observed[(clean_word(o), clean_word(r))][k] for k in ("word", "compare_to", "score", "step")}
+            t: [{k: final_evidence[(clean_word(o), clean_word(r))][k] for k in fields}
                 for o, r in zip(title.split(), t.split())] for t in finalists}
     winner = next(a for a in record["attempts"] if a["title"] == record["parody"])
     record["passes_threshold"] = winner["passes"]
+    if humor_first:
+        record["passes_threshold"] = winner["passes"] and all(
+            c["score"] is not None and c["score"] >= MIN_PHONETIC_SCORE for c in record["finalist_checks"][record["parody"]])
 
 
 def main():
@@ -294,10 +413,25 @@ def main():
     sources.add_argument("--word-bank", type=Path)
     sources.add_argument("--colab-notebook", type=Path)
     parser.add_argument("--example-notebook", type=Path, help="Running Man notebook, used with --word-bank")
+    parser.add_argument("--humor-first", action="store_true")
+    parser.add_argument("--drafts-from", type=Path, help="Reuse pre-check creative slates where present")
     parser.add_argument("--limit", type=int, required=True)
     args = parser.parse_args()
     if args.example_notebook and not args.word_bank:
         parser.error("--example-notebook requires the March --word-bank")
+    if args.humor_first and not args.example_notebook:
+        parser.error("--humor-first requires --example-notebook")
+    if args.drafts_from and not args.humor_first:
+        parser.error("--drafts-from requires --humor-first")
+    previous = {}
+    if args.drafts_from:
+        with args.drafts_from.open(encoding="utf-8") as source:
+            for line in source:
+                row = json.loads(line)
+                if row.get("draft_rounds"):
+                    if row.get("model") != args.base_model or row.get("reference_cell") != HUMOR_BATCH_CELL:
+                        parser.error("Cached creative drafts must use the same model and Colab cell")
+                    previous[row["input_title"]] = row
     if args.colab_notebook:
         words, phones, cutoff = notebook_words(args.colab_notebook), {}, 0.8
     else:
@@ -317,28 +451,44 @@ def main():
                         client_kwargs={"timeout": 120, "max_retries": 1}, temperature=0.7, top_p=0.9,
                         max_tokens=3072, seed=42, extra_body={"repeat_penalty": 1.1,
                         "chat_template_kwargs": {"enable_thinking": True}})
+
+    def generate_title(title, seed):
+        model.kwargs["seed"] = seed
+        row = {"input_title": title, "model": args.base_model, "agent": "smolagents.CodeAgent",
+               "suggestion_cutoff": cutoff, "word_count": len(words), "custom_pronunciations": len(phones)}
+        if args.colab_notebook or args.example_notebook:
+            row["tool_revisions"] = revisions
+        try:
+            suggested, errors = suggestions_for(title, suggester, json.dumps(words), phones, cutoff)
+            row.update(suggested_words=compact_suggestions(suggested, top_n=len(words)),
+                       suggestion_tool_results=suggested, suggestion_warnings=errors)
+            prompt = None
+            if args.example_notebook:
+                row["reference_cell"] = HUMOR_BATCH_CELL if args.humor_first else RUNNING_MAN_CELL
+                prompt = running_man_prompt(args.example_notebook, title,
+                                            {w: suggested[clean_word(w)] for w in title.split()}, row["reference_cell"])
+            prior = previous.get(title)
+            if prior and prior.get("suggestion_tool_results") != suggested:
+                row["draft_source_note"] = "Source suggestions differ; generated fresh pitches."
+                prior = None
+            run_agent(model, title, suggested, phones, analyzer, row, prompt, args.humor_first, suggester, prior)
+            if not any(s["reasoning"].strip() for s in row["steps"]):
+                raise ValueError("No model reasoning trace was captured")
+        except Exception as exc:
+            row["error"] = str(exc)
+        row["seed"] = seed
+        return row
+
     failed = False
     with Path(args.output).open("w", encoding="utf-8") as out:
         for title in titles:
-            row = {"input_title": title, "model": args.base_model, "agent": "smolagents.CodeAgent",
-                   "suggestion_cutoff": cutoff, "word_count": len(words), "custom_pronunciations": len(phones)}
-            if args.colab_notebook or args.example_notebook:
-                row["tool_revisions"] = revisions
-            try:
-                suggested, errors = suggestions_for(title, suggester, json.dumps(words), phones, cutoff)
-                row.update(suggested_words=compact_suggestions(suggested, top_n=len(words)),
-                           suggestion_tool_results=suggested, suggestion_warnings=errors)
-                prompt = None
-                if args.example_notebook:
-                    row["reference_cell"] = RUNNING_MAN_CELL
-                    prompt = running_man_prompt(args.example_notebook, title,
-                                                {w: suggested[clean_word(w)] for w in title.split()})
-                run_agent(model, title, suggested, phones, analyzer, row, prompt)
-                if not any(s["reasoning"].strip() for s in row["steps"]):
-                    raise ValueError("No model reasoning trace was captured")
-            except Exception as exc:
-                failed = True
-                row["error"] = str(exc)
+            row = generate_title(title, 42)
+            if args.humor_first and "error" in row:
+                print(f"{title}: retrying failed agent run ({row['error']})", flush=True)
+                first = row
+                row = generate_title(title, 43)
+                row["prior_runs"] = [first]
+            failed |= "error" in row
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
             out.flush()
             print(f"{title} → {row.get('parody', row.get('error'))}", flush=True)

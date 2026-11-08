@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+trace-export = ["tokenizers>=0.21"]
 drive = [
     "google-api-python-client",
     "google-auth-httplib2",

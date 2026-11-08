@@ -24,6 +24,8 @@ SHA256 = "9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61"
 # llama.cpp b12182, CUDA 12.8, linux/amd64.
 IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:859efa314dc34f1843a38ff28a4818aeac51a4cce125bdea4d2678aceba95469"
 PODS = "https://rest.runpod.io/v1/pods"
+MARCH_BANK_SHA256 = "c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff"
+MARCH_BANK_URL = "https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py"
 
 
 def utc_now():
@@ -105,6 +107,9 @@ def main():
                          help="Run CodeAgent with the Colab funny_words list and 0.8 suggestion cutoff")
     p.add_argument("--example-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
                    help="With --march-word-bank, replay the saved Running Man cell and both finalists' word checks")
+    p.add_argument("--humor-first", action="store_true",
+                   help="Use the humor-first batch cell, record drafts before verification, and use a 0.60 floor")
+    p.add_argument("--drafts-from", type=Path, help="Reuse initial pre-score drafts from an earlier humor-first run")
     p.add_argument("--gpu", default="NVIDIA GeForce RTX 4090,NVIDIA GeForce RTX 3090,NVIDIA RTX A6000,NVIDIA A40",
                    help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="COMMUNITY")
@@ -119,6 +124,10 @@ def main():
         p.error("The word bank or notebook must be a local file")
     if args.example_notebook and (not args.march_word_bank or not args.example_notebook.is_file()):
         p.error("--example-notebook requires a local notebook and --march-word-bank")
+    if args.humor_first and not args.example_notebook:
+        p.error("--humor-first requires --example-notebook")
+    if args.drafts_from and (not args.humor_first or not args.drafts_from.is_file()):
+        p.error("--drafts-from needs a local results JSONL and --humor-first")
     reasoning_budget, context = (1536, 16384) if source else (768, 4096)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     api = requests.Session()
@@ -136,9 +145,16 @@ def main():
         meta.update(profile="colab-codeagent" if args.colab_notebook else "march-codeagent",
                     source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                     suggestion_cutoff=0.8 if args.colab_notebook else 0.6)
+        if args.march_word_bank and meta["source_sha256"] == MARCH_BANK_SHA256:
+            meta["word_bank_url"] = MARCH_BANK_URL
     if args.example_notebook:
         meta.update(profile="running-man-codeagent",
                     notebook_sha256=hashlib.sha256(args.example_notebook.read_bytes()).hexdigest())
+    if args.humor_first:
+        meta.update(profile="humor-first-codeagent", reference_cell="GvGq8GcoGbCD", phonetic_floor=0.6,
+                    changed_word_floor_measure="parody-suggestions", auxiliary_measure="word-phone")
+    if args.drafts_from:
+        meta["draft_source_sha256"] = hashlib.sha256(args.drafts_from.read_bytes()).hexdigest()
     manifest = args.output_dir / "run.json"
     def save():
         manifest.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -173,6 +189,10 @@ def main():
             generator = [str(PIPELINE / "generate_march.py"), option, str(source)]
             if args.example_notebook:
                 generator.extend(["--example-notebook", str(args.example_notebook)])
+            if args.humor_first:
+                generator.append("--humor-first")
+            if args.drafts_from:
+                generator.extend(["--drafts-from", str(args.drafts_from)])
         else:
             generator = [str(PIPELINE / "generate_with_reasoning.py"), "--no-adapter", "--max-new-tokens", "1280"]
         subprocess.run([

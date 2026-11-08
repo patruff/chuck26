@@ -302,6 +302,56 @@ It records every word pair for both finalists, including unchanged words.
 The saved cell asks for scores above 0.8 and elsewhere gives 0.6 as the
 fallback threshold. Inspect the actual scores for both.
 
+For a humor-first batch, use the other saved cell, `GvGq8GcoGbCD`. This mode
+uses the March `parody-suggestions` similarity as an inclusive 0.60 floor
+for changed words. It also reports the separate `word-phone` rhyme score.
+Unchanged words count as identities and are labeled. Qwen records three or four original
+pitches, its own humor ratings, and its two funniest titles before using
+`word_phone_tool`. Within the eligible finalists, Qwen picks the winner. If
+neither qualifies, it revises; an unsuccessful revision is flagged in the results.
+
+```bash
+python pipeline/run_gguf_test.py --humor-first \
+  --example-notebook may18CerebrasQwen3.ipynb \
+  --march-word-bank ../chuck2025/word_structures.py --cloud SECURE \
+  --titles pipeline/humor_sample_titles.csv --limit 10 --timeout-mins 80 --output-dir out/humor-01
+python pipeline/export_humor_candidates.py out/humor-01/results.jsonl out/humor-01/candidates.jsonl
+```
+
+The export contains one prompt/completion pair per clean agent turn from a
+qualifying run, with the model's reasoning and code as separate fields. It
+keeps the observations in their original positions in the conversation. All
+exported turns start with `review_status: unreviewed`. For a stricter export, install `pip install -e ".[trace-export]"` and pass
+`--tokenizer-json TOKENIZER.json --thinking-budget 1536` to omit targets that
+come within four tokens of the thinking budget. Supply `--reviews labels.jsonl`
+to export only titles marked keep in the matching review file. The raw results keep
+failed checks, revisions, and unsuccessful runs for inspection.
+
+The source word bank is [`patruff/chuck2025/word_structures.py`](https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py)
+at SHA-256 `c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff`.
+It contains 1,565 words and custom pronunciations. The similarly named
+`parodies2026/word_structures.py` in this repo has a smaller bank.
+
+To compare the saved Colab code and the complete Running Man suggestion
+payload before a GPU run, use the CPU-only check. Pass `--pasted-example` to
+compare a saved console excerpt too.
+
+```bash
+python pipeline/check_colab_replay.py --example-notebook may18CerebrasQwen3.ipynb \
+  --word-bank ../chuck2025/word_structures.py
+```
+
+The archived check for `running → cumming` returns 0.665 from the suggestions
+tool and 1.000 from word-phone. For `man → klan`, the pair is 0.638 and
+0.925. The full word list, rather than the similarity formula, differs in the
+January 2026 `parodies2026` copy.
+
+For a paired comparison, `--drafts-from results.jsonl` carries forward each
+available title’s original pre-verification pitches and nominations. The model
+receives those pitches without the earlier winner or verifier results. It checks
+both finalists with the two pinned tools and selects again. Missing titles get
+new drafts. Creative and later selection turns retain their original histories.
+
 Use the local export of the `unslothQwQ4bitGOOD` notebook to replay its
 “As Good As It Gets” setup on the 27B GGUF. The runner reads the literal
 `funny_words` list without executing notebook cells. It uses the 0.8
