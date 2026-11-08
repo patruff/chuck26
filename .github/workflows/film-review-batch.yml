@@ -13,6 +13,10 @@ on:
       resume_run:
         description: Optional previous run ID to import checkpoints from
         type: string
+      prompt_snapshot:
+        description: Committed results directory containing matching guidance.txt and prompt-revision.json
+        default: results/feedback-0c3cc72
+        type: string
 permissions:
   contents: read
   actions: read
@@ -28,6 +32,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       SHARD: ${{ matrix.shard }}
+      SNAPSHOT: ${{ inputs.prompt_snapshot || 'results/feedback-0c3cc72' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,6 +50,10 @@ jobs:
           path: restored
       - name: Select films and prepare checkpoints
         run: |
+          for file in "$SNAPSHOT/guidance.txt" "$SNAPSHOT/prompt-revision.json"; do
+            [[ "$(realpath -e -- "$file")" == "$GITHUB_WORKSPACE"/results/* ]]
+            git --literal-pathspecs ls-files --error-unmatch -- "$file"
+          done
           mkdir -p out/samples
           if [[ -d restored/samples ]]; then cp -a restored/samples/. out/samples/; fi
           python - <<'PY'
@@ -63,8 +72,8 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           SLOTS: ${{ inputs.slots }}
         run: |
-          python pipeline/run_gguf_test.py --human-guidance results/feedback-0c3cc72/guidance.txt \
-            --pair-revision results/feedback-0c3cc72/prompt-revision.json \
+          python pipeline/run_gguf_test.py --human-guidance "$SNAPSHOT/guidance.txt" \
+            --pair-revision "$SNAPSHOT/prompt-revision.json" \
             --slots "$SLOTS" --titles out/films.csv --output-dir out/run --checkpoints out/samples \
             --gpu 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition,NVIDIA RTX PRO 5000 Blackwell,NVIDIA RTX 6000 Ada Generation,NVIDIA L40S,NVIDIA L40,NVIDIA RTX A6000,NVIDIA A40' --timeout-mins 310
       - uses: actions/upload-artifact@v4

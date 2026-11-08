@@ -18,14 +18,14 @@
     <div class="progress"><span>{{reviewed}} / {{group|length}} reviewed</span><progress value="{{reviewed}}" max="{{group|length}}"></progress></div>
   </nav>
   <div class="film-header">
-    <div class="film-meta">Film {{pos+1}} of {{group|length}}{% if pair.film.year %} <span>•</span> {{pair.film.year}}{% endif %}</div>
+    <div class="film-meta">{% if pair.film.movielens_id %}MovieLens rank {{pair.film.rank}}{% else %}Film {{pos+1}} of {{group|length}}{% endif %}{% if pair.film.year %} <span>•</span> {{pair.film.year}}{% endif %}</div>
     <h1>{{pair.film.title}}</h1>
     <div class="film-nav">
       {% if pos>0 %}<a aria-label="Previous film" href="{{url_for('index',set=collection,pair=group[pos-1].id)}}">← Previous</a>{% endif %}
       <form action="{{url_for('index')}}" class="jump">
         <input type="hidden" name="set" value="{{collection}}">
         <label class="sr" for="jump">Jump to film</label><select name="pair" id="jump" onchange="this.form.submit()">
-        {% for film in group %}<option value="{{film.id}}" {% if film.id==pair.id %}selected{% endif %}>{{loop.index}}. {{film.film.title}}</option>{% endfor %}</select><noscript><button>Go</button></noscript>
+        {% for film in group %}<option value="{{film.id}}" {% if film.id==pair.id %}selected{% endif %}>{{film.film.rank if film.film.movielens_id else loop.index}}. {{film.film.title}}</option>{% endfor %}</select><noscript><button>Go</button></noscript>
       </form>{% if pos+1<group|length %}<a aria-label="Next film" href="{{url_for('index',set=collection,pair=group[pos+1].id)}}">Next →</a>{% endif %}
     </div>
   </div>
@@ -37,7 +37,7 @@
       <table><caption>Changed words</caption><thead><tr><th>Swap</th><th>March</th><th>Word-phone</th></tr></thead><tbody>
       {% for p in side.pairs if p.word!=p.compare_to %}<tr><td>{{p.word}} → {{p.compare_to}}<small class="word-source">{{"Suggested" if p.compare_to in side.listed.get(p.word,[]) else "Off-list"}}</small></td><td>{{'%.3f'|format(p.suggestion_score) if p.suggestion_score is number else '—'}}</td><td>{{'%.3f'|format(p.word_phone_score) if p.word_phone_score is number else '—'}}</td></tr>{% endfor %}
       </tbody></table>
-      {% if not pair.shared_trace %}<details class="trace"><summary>Reasoning and tool calls</summary><pre>{{side.trace}}</pre></details>{% endif %}
+      {% if not pair.shared_trace %}<details class="trace"><summary>Reasoning and tool calls</summary><p class="trace-meta">Seed {{side.seed}} · {{ "Model selection" if side.model_choice else "Verified alternative" }}</p><pre>{{side.trace}}</pre></details>{% endif %}
     </article>
     {% endfor %}
   </div>
