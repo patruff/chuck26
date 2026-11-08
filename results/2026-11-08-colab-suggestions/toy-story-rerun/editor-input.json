@@ -1,0 +1,11 @@
+{
+  "feedback_sha256": "82c9130c1892e0553a5c60d0668479fe419576cbdd0522f391a4333af38d6b90",
+  "editor_context": "MODEL_RUN:\nThe Running Man → The Cumming Man. The model imagined a hunted man ejaculating while sprinting away from armed pursuers. The changed word scored 0.665.\n  Toy Story → Hoe Story. The model leaned on the gardening-tool/slang double meaning and pitched a mockumentary. The changed word scored 0.605.\n  Top Gun → Pop Gun. The model pitched F-14s fighting with children's party noisemakers. The changed word scored 0.650.\n  Full traces: results/2026-11-08-qwen-27b/humor-first-traces.jsonl\n\nHUMAN_FEEDBACK:\nThe jokes should be more edgy and wild. The recent examples weren't extreme enough.\n\nMODEL_RUN:\nThe original first-turn test picked The Hunning Man and attributed 0.83 to \"hunning\". That score belongs to \"huning\". Neither March tool scored the proposed spelling.\n  Source: results/2026-11-08-qwen-27b/humor-colab-first-turn.json\n\nHUMAN_FEEDBACK:\nI don't like the Hunning result since it doesn't make sense.\n\nMODEL_RUN:\nToy Story → Toy Gory. The tool had returned five swaps for \"toy\"; Qwen left \"toy\" alone and invented \"gory\" for \"story\".\n  Top Gun → Cop Fun. \"cop\" was returned for \"top\", but \"fun\" was not returned for \"gun\".\n  Source: results/2026-11-08-human-guidance/results.jsonl\n\nHUMAN_FEEDBACK:\nThe original Colab reasoning worked better. These choices feel tame. Start from the actual suggested words, go for a much wilder joke that lands in the title, and show which words, tool calls and observations led to the choice.",
+  "human_feedback": [
+    "The jokes should be more edgy and wild. The recent examples weren't extreme enough.",
+    "I don't like the Hunning result since it doesn't make sense.",
+    "The original Colab reasoning worked better. These choices feel tame. Start from the actual suggested words, go for a much wilder joke that lands in the title, and show which words, tool calls and observations led to the choice."
+  ],
+  "example_excerpts": 0,
+  "include_verbatim_in_task": true
+}

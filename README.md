@@ -12,6 +12,8 @@ the corrected notebook in Colab or select **gguf-test** in GitHub Actions.
 
 ## Teach Qwen what you find funny
 
+**[Read the current movie transcripts](results/2026-11-08-colab-suggestions/CURRENT-TRANSCRIPTS.md)** for the actual suggested words, full Qwen thinking, Python calls and phonetic returns. The [Toy Story transcript](results/2026-11-08-colab-suggestions/toy-story-rerun/transcripts/01-toy-story.md) follows the choice between *Hoe Story* and *Boy Story*. The [current feedback file](results/2026-11-08-colab-suggestions/review-next.txt) has a comment field beneath each movie.
+
 Edit [guidance/human-feedback.txt](guidance/human-feedback.txt) and commit it to `main`. That edit starts the [human-guidance Action](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml) and rents a RunPod GPU for ten fresh titles. You can also open the Action, choose **Run workflow**, and enter the path to another committed `.txt` file under `guidance/`. A single file is all the run needs from you. For a one-title rerun, enter its name in the optional **movie** field.
 
 Put a prior result, its rationale, or a relevant excerpt of its trace under `MODEL_RUN:`. Add your own comments under `HUMAN_FEEDBACK:`. Both labels start at the beginning of a line. You can add as many example/comment pairs as fit in the model context.
