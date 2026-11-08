@@ -433,6 +433,46 @@ Use the thinking channel for brainstorming. Keep executable actions in the CodeA
         record["fallback"] = None if record["passes_threshold"] else record["parody"]
 
 
+def make_model(model_id, server):
+    return ReasoningGGUFModel(model_id=model_id, api_base=server.rstrip("/") + "/v1",
+                        api_key=os.environ.get("LLAMA_API_KEY") or "local", flatten_messages_as_text=True,
+                        client_kwargs={"timeout": 120, "max_retries": 1}, temperature=0.7, top_p=0.9,
+                        max_tokens=3072, seed=42, extra_body={"repeat_penalty": 1.1,
+                        "chat_template_kwargs": {"enable_thinking": True}})
+
+
+def generate_title(title, seed, *, model, words, phones, cutoff, revisions, suggester, analyzer,
+                   notebook, humor_first, previous, revision, extra_task=None):
+    model.kwargs["seed"] = seed
+    row = {"input_title": title, "model": model.model_id, "agent": "smolagents.CodeAgent",
+           "suggestion_cutoff": cutoff, "word_count": len(words), "custom_pronunciations": len(phones)}
+    if revisions:
+        row["tool_revisions"] = revisions
+    try:
+        suggested, errors = suggestions_for(title, suggester, json.dumps(words), phones, cutoff)
+        row.update(suggested_words=compact_suggestions(suggested, top_n=len(words)),
+                   suggestion_tool_results=suggested, suggestion_warnings=errors)
+        prompt = None
+        if notebook:
+            row["reference_cell"] = HUMOR_BATCH_CELL if humor_first else RUNNING_MAN_CELL
+            prompt_suggestions = row["suggested_words"] if humor_first else suggested
+            prompt = running_man_prompt(notebook, title,
+                                        {w: prompt_suggestions[clean_word(w)] for w in title.split()}, row["reference_cell"])
+        if extra_task and prompt:
+            prompt += "\n\n" + extra_task
+        prior = previous.get(title)
+        if prior and prior.get("suggestion_tool_results") != suggested:
+            row["draft_source_note"] = "Source suggestions differ; generated fresh pitches."
+            prior = None
+        run_agent(model, title, suggested, phones, analyzer, row, prompt, humor_first, suggester, prior, revision)
+        if not any(s["reasoning"].strip() for s in row["steps"]):
+            raise ValueError("No model reasoning trace was captured")
+    except Exception as exc:
+        row["error"] = str(exc)
+    row["seed"] = seed
+    return row
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("llama-server", "base-model", "titles", "output"):
@@ -479,11 +519,7 @@ def main():
         suggester, analyzer = [load_tool(repo, revision=rev, trust_remote_code=True) for repo, rev in revisions.items()]
     else:
         suggester, analyzer = load_parody_tools()
-    model = ReasoningGGUFModel(model_id=args.base_model, api_base=args.llama_server.rstrip("/") + "/v1",
-                        api_key=os.environ.get("LLAMA_API_KEY") or "local", flatten_messages_as_text=True,
-                        client_kwargs={"timeout": 120, "max_retries": 1}, temperature=0.7, top_p=0.9,
-                        max_tokens=3072, seed=42, extra_body={"repeat_penalty": 1.1,
-                        "chat_template_kwargs": {"enable_thinking": True}})
+    model = make_model(args.base_model, args.llama_server)
 
     output_dir = Path(args.output).parent
     revision = None
@@ -492,42 +528,20 @@ def main():
         revision = revise_prompt(model, plan)
         (output_dir / "prompt-revision.json").write_text(json.dumps(revision, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    def generate_title(title, seed):
-        model.kwargs["seed"] = seed
-        row = {"input_title": title, "model": args.base_model, "agent": "smolagents.CodeAgent",
-               "suggestion_cutoff": cutoff, "word_count": len(words), "custom_pronunciations": len(phones)}
-        if args.colab_notebook or args.example_notebook:
-            row["tool_revisions"] = revisions
-        try:
-            suggested, errors = suggestions_for(title, suggester, json.dumps(words), phones, cutoff)
-            row.update(suggested_words=compact_suggestions(suggested, top_n=len(words)),
-                       suggestion_tool_results=suggested, suggestion_warnings=errors)
-            prompt = None
-            if args.example_notebook:
-                row["reference_cell"] = HUMOR_BATCH_CELL if args.humor_first else RUNNING_MAN_CELL
-                prompt_suggestions = row["suggested_words"] if args.humor_first else suggested
-                prompt = running_man_prompt(args.example_notebook, title,
-                                            {w: prompt_suggestions[clean_word(w)] for w in title.split()}, row["reference_cell"])
-            prior = previous.get(title)
-            if prior and prior.get("suggestion_tool_results") != suggested:
-                row["draft_source_note"] = "Source suggestions differ; generated fresh pitches."
-                prior = None
-            run_agent(model, title, suggested, phones, analyzer, row, prompt, args.humor_first, suggester, prior, revision)
-            if not any(s["reasoning"].strip() for s in row["steps"]):
-                raise ValueError("No model reasoning trace was captured")
-        except Exception as exc:
-            row["error"] = str(exc)
-        row["seed"] = seed
-        return row
+    def sample(title, seed):
+        return generate_title(title, seed, model=model, words=words, phones=phones, cutoff=cutoff,
+                              revisions=revisions if args.colab_notebook or args.example_notebook else {},
+                              suggester=suggester, analyzer=analyzer, notebook=args.example_notebook,
+                              humor_first=args.humor_first, previous=previous, revision=revision)
 
     failed = False
     with Path(args.output).open("w", encoding="utf-8") as out:
         for title in titles:
-            row = generate_title(title, 42)
+            row = sample(title, 42)
             if args.humor_first and "error" in row:
                 print(f"{title}: retrying failed agent run ({row['error']})", flush=True)
                 first = row
-                row = generate_title(title, 43)
+                row = sample(title, 43)
                 row["prior_runs"] = [first]
             failed |= "error" in row
             out.write(json.dumps(row, ensure_ascii=False) + "\n")

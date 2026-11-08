@@ -34,7 +34,7 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def pod_config(name, server_key, gpu, cloud, reasoning_budget, context):
+def pod_config(name, server_key, gpu, cloud, reasoning_budget, context, slots=1):
     url = f"https://huggingface.co/{MODEL}/resolve/{REVISION}/{FILENAME}"
     boot = (
         "set -eu; /app/llama-server --list-devices > /tmp/devices 2>&1; cat /tmp/devices; "
@@ -43,7 +43,7 @@ def pod_config(name, server_key, gpu, cloud, reasoning_budget, context):
         f"echo '{SHA256}  /tmp/model.gguf' | sha256sum -c -; "
         f"exec /app/llama-server -m /tmp/model.gguf --alias {MODEL} "
         "--host 0.0.0.0 --port 8080 --jinja --reasoning-format deepseek "
-        f"--device CUDA0 --reasoning-budget {reasoning_budget} -ngl 99 -c {context} -np 1"
+        f"--device CUDA0 --reasoning-budget {reasoning_budget} -ngl 99 -c {context * slots} -np {slots}"
     )
     return {
         "name": name, "imageName": IMAGE, "cloudType": cloud,
@@ -118,6 +118,9 @@ def main(private_dir):
     p.add_argument("--drafts-from", type=Path, help="Reuse initial pre-score drafts from an earlier humor-first run")
     p.add_argument("--human-guidance", type=Path, metavar="FEEDBACK.TXT",
                    help="Have Qwen revise its creative instructions from examples and human comments before drafting")
+    p.add_argument("--pair-revision", type=Path, help="Run two independent samples per ranked film with a saved guidance revision")
+    p.add_argument("--slots", type=int, default=1, help="Concurrent llama.cpp slots for a paired film batch")
+    p.add_argument("--checkpoints", type=Path, help="Persistent directory for a paired batch's per-film samples")
     p.add_argument("--gpu", default="NVIDIA GeForce RTX 4090,NVIDIA GeForce RTX 3090,NVIDIA RTX A6000,NVIDIA A40",
                    help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="SECURE")
@@ -138,6 +141,20 @@ def main(private_dir):
         except ValueError as exc:
             p.error(str(exc))
         args.humor_first = True
+    if args.pair_revision:
+        if not plan or not args.titles or args.slots < 1 or not args.checkpoints:
+            p.error("--pair-revision needs --human-guidance, --titles, --checkpoints and positive --slots")
+        frozen = json.loads(args.pair_revision.read_text(encoding="utf-8"))
+        if (frozen.get("feedback_sha256") != plan["feedback_sha256"] or frozen.get("model") != MODEL
+                or hashlib.sha256(frozen["applied_instructions"].encode()).hexdigest() != frozen.get("applied_instructions_sha256")):
+            p.error("The frozen prompt revision does not match the feedback, model or instruction hash")
+        with args.titles.open(newline="",encoding="utf-8") as f:
+            films = list(csv.DictReader(f))
+        if not films or any(not f.get("title") or not f.get("rank","").isdigit() for f in films):
+            p.error("The paired film list needs rank and title columns")
+        args.limit = len(films)
+    elif args.slots != 1 or args.checkpoints:
+        p.error("--slots and --checkpoints require a paired batch")
     if not production and (args.example_notebook or args.humor_first or args.preflight_only):
         p.error("The humor-first notebook and preflight require the 2025 bank")
     if production:
@@ -183,6 +200,8 @@ def main(private_dir):
     if plan:
         (args.output_dir / "guidance.txt").write_bytes(raw_guidance)
         (args.output_dir / "editor-input.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if args.pair_revision:
+        (args.output_dir / "prompt-revision.json").write_bytes(args.pair_revision.read_bytes())
     api = requests.Session()
     api.headers["Authorization"] = "Bearer " + os.environ["RUNPOD_API_KEY"]
     server_key = secrets.token_urlsafe(32)
@@ -212,6 +231,9 @@ def main(private_dir):
         meta["title"] = args.title.strip()
     if plan:
         meta.update(guidance_sha256=plan["feedback_sha256"], guidance_file=args.human_guidance.name)
+    if args.pair_revision:
+        meta.update(slots=args.slots, sampled_sides=2, ranks=[int(f["rank"]) for f in films],
+                    applied_instructions_sha256=frozen["applied_instructions_sha256"])
     manifest = args.output_dir / "run.json"
     def save():
         manifest.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -224,7 +246,7 @@ def main(private_dir):
     pod_id = None
     save()
     try:
-        config = pod_config(name, server_key, args.gpu, args.cloud, reasoning_budget, context)
+        config = pod_config(name, server_key, args.gpu, args.cloud, reasoning_budget, context, args.slots)
         response = api.post(PODS, json=config, timeout=75)
         if not response.ok:
             # API errors can echo the request, which contains the temporary server credential.
@@ -255,11 +277,16 @@ def main(private_dir):
                 generator.extend(["--guidance-plan", str(args.output_dir / "editor-input.json")])
         else:
             generator = [str(PIPELINE / "generate_with_reasoning.py"), "--no-adapter", "--max-new-tokens", "1280"]
-        subprocess.run([
-            sys.executable, *generator, "--llama-server", endpoint, "--base-model", MODEL,
-            "--titles", str(args.titles), "--limit", str(args.limit),
-            "--output", str(args.output_dir / "results.jsonl"),
-        ], check=True, env=env, timeout=max(1, deadline - time.monotonic()))
+        if args.pair_revision:
+            command = [sys.executable, str(PIPELINE / "generate_film_pairs.py"), "--server", endpoint,
+                       "--model", MODEL, "--bank", str(source), "--notebook", str(args.example_notebook),
+                       "--revision", str(args.output_dir / "prompt-revision.json"), "--titles", str(args.titles),
+                       "--directory", str(args.checkpoints), "--slots", str(args.slots)]
+        else:
+            command = [sys.executable, *generator, "--llama-server", endpoint, "--base-model", MODEL,
+                       "--titles", str(args.titles), "--limit", str(args.limit),
+                       "--output", str(args.output_dir / "results.jsonl")]
+        subprocess.run(command, check=True, env=env, timeout=max(1, deadline - time.monotonic()))
         meta["generation_status"] = "complete"
     finally:
         # A lost creation response can still allocate a pod. Reconcile only this unique name.
