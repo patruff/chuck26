@@ -1,0 +1,16 @@
+{
+  "scope": "Adult workplace replacement",
+  "ranks": [
+    112
+  ],
+  "sides": "ab",
+  "generation_status": "complete",
+  "model": "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+  "parent_action_run": 42491023480,
+  "cost_note": "Uses the existing RunPod server. Usage is included in the parent run.",
+  "started_at": "2026-11-08T16:00:24.987644+00:00",
+  "ended_at": "2026-11-08T16:03:11.872332+00:00",
+  "applied_instructions_sha256": "d1b2e2ff4ea10a96614ee1de78f58fe2ff05b63261d51f32f6228050839d4cb8",
+  "shared_server": true,
+  "parent_shard": 5
+}
