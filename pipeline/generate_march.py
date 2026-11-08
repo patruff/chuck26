@@ -2,6 +2,7 @@
 import argparse
 import ast
 from difflib import SequenceMatcher
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ from chuckles_prime.tools import load_parody_tools
 from smolagents import ActionStep, CodeAgent, OpenAIModel, Tool, load_tool
 from smolagents.monitoring import LogLevel
 from humor_batch import RecordDrafts, clears_phonetic_floor
+from march_source import BANK_SHA256, BANK_URL, NOTEBOOK
 
 # These Hub sources match the tool classes printed in the linked Colab's saved output.
 COLAB_TOOLS = {"patruff/parody-suggestions": "39102988c0309dd7cb96d196f671c0e5ef9c70aa",
@@ -327,7 +329,10 @@ Working with CodeAgent:
 First call record_drafts(attempts, finalists) with three or four dicts {"title": ..., "humor": 8, "why": ...}
 and the two titles you personally find funniest. Save the full premises before making any verifier call.
 Go for the uncomfortable, dirty or dark double meaning when it makes a better joke. Give the image or premise
-that made you laugh. You can invent a better swap than the suggestions.
+that made you laugh. A proposed title must mean something to the audience. Explain what the changed phrase
+means and the scene it suggests. Discard a respelling if its only appeal is how it sounds.
+You can invent a better swap than the suggestions. Check its actual spelling: a neighboring suggestion's
+pronunciation or score cannot verify a different word.
 For each word of both nominees, execute print(word_phone_tool(word=original, compare_to=replacement)).
 Use a Python loop over zip(original_title.split(), finalist.split()). Only test these nominees; do not
 search over cross-products of words. The phonetic tool returns a dict.
@@ -403,6 +408,8 @@ Use the thinking channel for brainstorming. Keep executable actions in the CodeA
     if humor_first:
         record["passes_threshold"] = winner["passes"] and all(
             c["score"] is not None and c["score"] >= MIN_PHONETIC_SCORE for c in record["finalist_checks"][record["parody"]])
+        record["qualifying_parody"] = record["parody"] if record["passes_threshold"] else None
+        record["fallback"] = None if record["passes_threshold"] else record["parody"]
 
 
 def main():
@@ -419,8 +426,10 @@ def main():
     args = parser.parse_args()
     if args.example_notebook and not args.word_bank:
         parser.error("--example-notebook requires the March --word-bank")
-    if args.humor_first and not args.example_notebook:
-        parser.error("--humor-first requires --example-notebook")
+    if args.humor_first:
+        if not args.word_bank or hashlib.sha256(args.word_bank.read_bytes()).hexdigest() != BANK_SHA256:
+            parser.error(f"--humor-first requires the pinned 2025 word bank: {BANK_URL}")
+        args.example_notebook = args.example_notebook or NOTEBOOK
     if args.drafts_from and not args.humor_first:
         parser.error("--drafts-from requires --humor-first")
     previous = {}
@@ -491,7 +500,10 @@ def main():
             failed |= "error" in row
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
             out.flush()
-            print(f"{title} → {row.get('parody', row.get('error'))}", flush=True)
+            label = row.get("parody", row.get("error"))
+            if row.get("fallback"):
+                label = f"no qualifying winner (fallback: {row['fallback']})"
+            print(f"{title} → {label}", flush=True)
     if failed:
         raise SystemExit("One or more CodeAgent runs failed; inspect results.jsonl")
 

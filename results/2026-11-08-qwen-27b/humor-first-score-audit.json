@@ -1,0 +1,357 @@
+{
+  "cell": "GvGq8GcoGbCD",
+  "cell_url": "https://colab.research.google.com/drive/1j6x-MpKF-Qm2hV1YDZfz7AOCc50PogX1?hl=en-GB#scrollTo=GvGq8GcoGbCD",
+  "tool_source_matches": {
+    "patruff/parody-suggestions": {
+      "revision": "8147e43f9acfb3af5123fd6fd329c112d8ff7a6b",
+      "same_python_ast": true
+    },
+    "patruff/word-phone": {
+      "revision": "044bccae4f60f213a2246e69c03558a52c6525ff",
+      "same_python_ast": true
+    }
+  },
+  "pasted_equals_saved_equals_runpod_full_suggestions": true,
+  "audience_line_in_actual_27b_request": "The audience likes edgy, dark, sexual, violent, adult themes,",
+  "march_step_zero_pick": "The Cumming Man",
+  "march_saved_later_errors": [
+    "Code execution failed at line 'word_phone_tool = load_tool(\"word_phone_tool\")' due to: ValueError:Loading a tool from Hub requires to trust remote code. Make sure you've inspected the repo and pass `trust_remote_code=True` to load the tool.",
+    "Code execution failed at line 'word_phone_tool = load_tool(\"word_phone_tool\", trust_remote_code=True)' due to: RepositoryNotFoundError:404 Client Error. (Request ID: Root=1-682a02c5-32f57c4017df29f2390e8bfe;a2257b5c-5a69-42bf-8663-4ca2acd1ca41) Repository Not Found for url: https://huggingface.co/spaces/word_phone_tool/resolve/main/tool.py. Please make sure you specified the correct `repo_id` and `repo_type`. If you are trying to access a private or gated repo, make sure you are authenticated. For more details, see https://huggingface.co/docs/huggingface",
+    "Code execution failed at line 'word_phone_tool = load_tool(\"smolagents/phonetic_similarity\", trust_remote_code=True)' due to: RepositoryNotFoundError:404 Client Error. (Request ID: Root=1-682a02c7-4c8ee9776f6f5c4b1cfaff9d;5991cb42-48a4-4f0b-9db6-727eda939255) Repository Not Found for url: https://huggingface.co/spaces/smolagents/phonetic_similarity/resolve/main/tool.py. Please make sure you specified the correct `repo_id` and `repo_type`. If you are trying to access a private or gated repo, make sure you are authenticated. For more details, see https://h",
+    "Final answer: Error: Error code: 400 - {'message': 'Please reduce the length of the messages or completion. Current length is 17051 while limit is 16382', 'type': 'invalid_request_error', 'param': 'messages', 'code': 'context_length_exceeded'}"
+  ],
+  "control_suggestions": {
+    "The": {
+      "target": "the",
+      "target_phones": "DH AH0",
+      "target_last_vowel": "AH",
+      "target_ending": "",
+      "invalid_words": [],
+      "suggestions": []
+    },
+    "Running": {
+      "target": "running",
+      "target_phones": "R AH1 N IH0 NG",
+      "target_last_vowel": "AH",
+      "target_ending": "N IH0 NG",
+      "invalid_words": [],
+      "suggestions": [
+        {
+          "word": "soning",
+          "similarity": 0.83,
+          "rhyme_score": 1.0,
+          "primary_vowel_score": 1.0,
+          "near_rhyme_score": 0.9,
+          "special_pattern_score": 0.3,
+          "length_score": 1.0,
+          "stress_score": 1.0,
+          "front_consonant_score": 0.0,
+          "phones": "S AH1 N IH0 NG",
+          "last_vowel": "AH",
+          "ending": "N IH0 NG",
+          "is_custom": true
+        },
+        {
+          "word": "huning",
+          "similarity": 0.83,
+          "rhyme_score": 1.0,
+          "primary_vowel_score": 1.0,
+          "near_rhyme_score": 0.9,
+          "special_pattern_score": 0.3,
+          "length_score": 1.0,
+          "stress_score": 1.0,
+          "front_consonant_score": 0.0,
+          "phones": "HH AH1 N IH0 NG",
+          "last_vowel": "AH",
+          "ending": "N IH0 NG",
+          "is_custom": true
+        },
+        {
+          "word": "cumming",
+          "similarity": 0.665,
+          "rhyme_score": 0.4,
+          "primary_vowel_score": 1.0,
+          "near_rhyme_score": 0.8,
+          "special_pattern_score": 0.9,
+          "length_score": 1.0,
+          "stress_score": 1.0,
+          "front_consonant_score": 0.0,
+          "phones": "K AH1 M IH0 NG",
+          "last_vowel": "AH",
+          "ending": "M IH0 NG",
+          "is_custom": true
+        },
+        {
+          "word": "butting",
+          "similarity": 0.605,
+          "rhyme_score": 0.4,
+          "primary_vowel_score": 1.0,
+          "near_rhyme_score": 0.6,
+          "special_pattern_score": 0.7,
+          "length_score": 1.0,
+          "stress_score": 1.0,
+          "front_consonant_score": 0.0,
+          "phones": "B AH1 T IH0 NG",
+          "last_vowel": "AH",
+          "ending": "T IH0 NG",
+          "is_custom": true
+        },
+        {
+          "word": "nutting",
+          "similarity": 0.605,
+          "rhyme_score": 0.4,
+          "primary_vowel_score": 1.0,
+          "near_rhyme_score": 0.6,
+          "special_pattern_score": 0.7,
+          "length_score": 1.0,
+          "stress_score": 1.0,
+          "front_consonant_score": 0.0,
+          "phones": "N AH1 T IH0 NG",
+          "last_vowel": "AH",
+          "ending": "T IH0 NG",
+          "is_custom": true
+        }
+      ]
+    },
+    "Man": {
+      "target": "man",
+      "target_phones": "M AE1 N",
+      "target_last_vowel": "AE",
+      "target_ending": "N",
+      "invalid_words": [],
+      "suggestions": [
+        {
+          "word": "men",
+          "similarity": 0.655,
+          "rhyme_score": 1.0,
+          "primary_vowel_score": 0.7,
+          "near_rhyme_score": 0.0,
+          "special_pattern_score": 0.0,
+          "length_score": 1.0,
+          "stress_score": 1.0,
+          "front_consonant_score": 1.0,
+          "phones": "M EH1 N",
+          "last_vowel": "EH",
+          "ending": "N",
+          "is_custom": true
+        },
+        {
+          "word": "klan",
+          "similarity": 0.638,
+          "rhyme_score": 1.0,
+          "primary_vowel_score": 1.0,
+          "near_rhyme_score": 0.0,
+          "special_pattern_score": 0.0,
+          "length_score": 0.75,
+          "stress_score": 1.0,
+          "front_consonant_score": 0.0,
+          "phones": "K L AE1 N",
+          "last_vowel": "AE",
+          "ending": "N",
+          "is_custom": true
+        }
+      ]
+    }
+  },
+  "paired_scores": [
+    {
+      "original": "running",
+      "replacement": "cumming",
+      "suggestion_similarity": 0.665,
+      "word_phone_similarity": 1.0,
+      "word_phone_components": {
+        "similarity": 1.0,
+        "rhyme_score": 1.0,
+        "length_score": 1.0,
+        "stress_score": 1.0,
+        "phone_length_difference": 0
+      }
+    },
+    {
+      "original": "running",
+      "replacement": "nutting",
+      "suggestion_similarity": 0.605,
+      "word_phone_similarity": 1.0,
+      "word_phone_components": {
+        "similarity": 1.0,
+        "rhyme_score": 1.0,
+        "length_score": 1.0,
+        "stress_score": 1.0,
+        "phone_length_difference": 0
+      }
+    },
+    {
+      "original": "man",
+      "replacement": "klan",
+      "suggestion_similarity": 0.638,
+      "word_phone_similarity": 0.925,
+      "word_phone_components": {
+        "similarity": 0.925,
+        "rhyme_score": 1.0,
+        "length_score": 0.75,
+        "stress_score": 1.0,
+        "phone_length_difference": 1
+      }
+    },
+    {
+      "original": "toy",
+      "replacement": "hoe",
+      "suggestion_similarity": 0.605,
+      "word_phone_similarity": 1.0,
+      "word_phone_components": {
+        "similarity": 1.0,
+        "rhyme_score": 1.0,
+        "length_score": 1.0,
+        "stress_score": 1.0,
+        "phone_length_difference": 0
+      }
+    },
+    {
+      "original": "die",
+      "replacement": "high",
+      "suggestion_similarity": 0.65,
+      "word_phone_similarity": 1.0,
+      "word_phone_components": {
+        "similarity": 1.0,
+        "rhyme_score": 1.0,
+        "length_score": 1.0,
+        "stress_score": 1.0,
+        "phone_length_difference": 0
+      }
+    },
+    {
+      "original": "top",
+      "replacement": "pop",
+      "suggestion_similarity": 0.65,
+      "word_phone_similarity": 1.0,
+      "word_phone_components": {
+        "similarity": 1.0,
+        "rhyme_score": 1.0,
+        "length_score": 1.0,
+        "stress_score": 1.0,
+        "phone_length_difference": 0
+      }
+    },
+    {
+      "original": "fight",
+      "replacement": "tight",
+      "suggestion_similarity": 0.65,
+      "word_phone_similarity": 1.0,
+      "word_phone_components": {
+        "similarity": 1.0,
+        "rhyme_score": 1.0,
+        "length_score": 1.0,
+        "stress_score": 1.0,
+        "phone_length_difference": 0
+      }
+    },
+    {
+      "original": "club",
+      "replacement": "rub",
+      "suggestion_similarity": 0.638,
+      "word_phone_similarity": 0.925,
+      "word_phone_components": {
+        "similarity": 0.925,
+        "rhyme_score": 1.0,
+        "length_score": 0.75,
+        "stress_score": 1.0,
+        "phone_length_difference": 1
+      }
+    }
+  ],
+  "scoring_formula": "word-phone = 0.60 * rhyme + 0.30 * phone-count similarity + 0.10 * stress similarity. It can award a perfect score to distinct words.",
+  "github_source_check": {
+    "word_bank_url": "https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py",
+    "word_bank_sha256": "c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff",
+    "git_blob": "d00272f968af71c7dd0d0f7f22957ec7e321a0b3",
+    "exact_bytes_equal_to_runpod_input": true,
+    "word_count": 1565,
+    "pronunciation_count": 1565,
+    "april_2025_drive_copies_match_parsed_values": 2,
+    "chuck26_main": "b1336b20f9a6b31237adc693179c5a9b42b9ba76",
+    "only_path_commit": "ca33fba8fea53a967e06d249b73d3ef3b3541528",
+    "only_path_commit_date": "2026-01-31",
+    "chuck26_tool_comparison": {
+      "parody_suggestions": {
+        "git_blob": "e4ddfa426bb40974989dcbb8ff9f62de63e49ebc",
+        "same_bytes_as_chuck2025_tool": true,
+        "same_methods_as_colab": true
+      },
+      "word_phone": {
+        "git_blob": "8e05fb947d1bb10f499df1606fd76600d55a45f7",
+        "same_bytes_as_chuck2025_tool": true,
+        "same_methods_as_colab": true
+      }
+    },
+    "chuck26_packaged_word_count": 226,
+    "chuck26_packaged_custom_pronunciations": 4,
+    "chuck26_tool_with_chuck2025_bank_reproduces_full_payload": true,
+    "chuck26_tool_with_chuck26_bank_candidate_count": 0,
+    "hf_heads_matching_exact_cell_as_of_run": "Both Hub main branches still point to March 30, 2025 revisions used here. The January 2025 tools in the other Colab are different."
+  },
+  "unmodified_first_turn": {
+    "model": "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+    "library": "smolagents 1.5.0",
+    "selected": "The Hunning Man",
+    "rating_for_selected": 7,
+    "higher_rated_draft": "The Cumming Man",
+    "higher_rating": 9,
+    "model_stated_sound_score": 0.83,
+    "actual_scores_for_model_spelling": {
+      "word": "running",
+      "compare_to": "hunning",
+      "score": null,
+      "phones": [
+        "R",
+        "AH1",
+        "N",
+        "IH0",
+        "NG"
+      ],
+      "replacement_phones": null,
+      "word_phone_score": null,
+      "suggestion_score": null,
+      "score_basis": "parody-suggestions",
+      "error": "Comparison word \"hunning\" not found in dictionary or custom phones"
+    },
+    "actual_scores_for_suggested_spelling": {
+      "word": "running",
+      "compare_to": "huning",
+      "score": 0.83,
+      "phones": [
+        "R",
+        "AH1",
+        "N",
+        "IH0",
+        "NG"
+      ],
+      "replacement_phones": [
+        "HH",
+        "AH1",
+        "N",
+        "IH0",
+        "NG"
+      ],
+      "word_phone_score": 1.0,
+      "suggestion_score": 0.83,
+      "score_basis": "parody-suggestions"
+    },
+    "qualification": "First assistant response only, with the historical prompt. There was no live verifier observation before this response."
+  },
+  "pasted_task_matches_source_other_than_display_formatting": true,
+  "display_differences": {
+    "Rich table borders and whitespace": true,
+    "bracketed_placeholders_omitted_by_rendering": [
+      "[call word_phone_tool]",
+      "[explanation]",
+      "[score]",
+      "[etc.]"
+    ]
+  },
+  "complete_adapted_source_in_actual_model_input": true,
+  "prompt_changes_for_batch": [
+    "Replace the inconsistent >0.8 and >0.6 instructions by an inclusive 0.60 floor.",
+    "Append instructions for recording creative pitches, using both authenticated smolagents tools, distinguishing the scores and returning a checked answer.",
+    "For five previously created slates, supply only pre-verification pitches and nominations. Prior verifier observations and earlier winners are withheld."
+  ]
+}

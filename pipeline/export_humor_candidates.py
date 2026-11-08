@@ -61,9 +61,16 @@ def main():
     parser.add_argument("results", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--reviews", type=Path, help="Export only titles marked keep for this raw results file")
-    parser.add_argument("--tokenizer-json", type=Path, help="Optional matching HF tokenizer for screening near-budget traces")
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument("--tokenizer-json", type=Path, help="Matching HF tokenizer for screening near-budget traces")
+    sources.add_argument("--run-manifest", type=Path, help="Use the GGUF run's pinned tokenizer and thinking budget")
     parser.add_argument("--thinking-budget", type=int, default=1536)
     args = parser.parse_args()
+    if args.run_manifest:
+        from huggingface_hub import hf_hub_download
+        manifest = json.loads(args.run_manifest.read_text(encoding="utf-8"))
+        args.tokenizer_json = hf_hub_download(manifest["model"], "GSQ-3bit/tokenizer.json", revision=manifest["revision"])
+        args.thinking_budget = manifest["reasoning_budget"]
     token_count = None
     if args.tokenizer_json:
         from tokenizers import Tokenizer

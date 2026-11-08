@@ -15,8 +15,8 @@ on:
       mode:
         description: "Train the reasoning adapter or run inference with the 27B Qwen GGUF"
         type: choice
-        options: [train, gguf-test]
-        default: train
+        options: [gguf-test, gguf-preflight, train]
+        default: gguf-test
       test_mode:
         description: "Cheap validation run (Qwen3-0.6B, 20 steps) — try this first"
         type: boolean
@@ -66,7 +66,7 @@ concurrency:
 
 jobs:
   pipeline:
-    if: ${{ inputs.mode != 'gguf-test' }}
+    if: ${{ inputs.mode == 'train' }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
@@ -120,11 +120,10 @@ jobs:
         run: python pipeline/run_pipeline.py --sweep
 
   gguf-test:
-    if: ${{ inputs.mode == 'gguf-test' }}
+    if: ${{ inputs.mode == 'gguf-test' || inputs.mode == 'gguf-preflight' }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
-      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
       HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY || secrets.HF_TOKEN }}
       PYTHONUNBUFFERED: "1"
     steps:
@@ -133,18 +132,29 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -e . 'setuptools<81'
-      - name: Generate parodies and traces
+      - run: pip install -e '.[trace-export]' 'smolagents==1.24.0' 'huggingface-hub==0.36.0' 'setuptools<81'
+      - name: Check the archived 2025 controls on CPU
+        if: ${{ inputs.mode == 'gguf-preflight' }}
         env:
+          CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
+        run: python pipeline/run_gguf_test.py --preflight-only
+      - name: Generate parodies and traces
+        if: ${{ inputs.mode == 'gguf-test' }}
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
           TITLE_LIMIT: ${{ inputs.infer_limit }}
           TIMEOUT_MINS: ${{ inputs.timeout_mins }}
           GPU_TYPES: ${{ inputs.gpu_type }}
         run: |
-          if [ "${TIMEOUT_MINS:-0}" = "0" ]; then TIMEOUT_MINS=25; fi
+          if [ "${TIMEOUT_MINS:-0}" = "0" ]; then TIMEOUT_MINS=80; fi
           python pipeline/run_gguf_test.py --limit "${TITLE_LIMIT:-10}" \
             --gpu "$GPU_TYPES" --timeout-mins "$TIMEOUT_MINS" --output-dir out/gguf-test
+      - name: Export review-pending candidate turns
+        if: ${{ inputs.mode == 'gguf-test' && success() }}
+        run: python pipeline/export_humor_candidates.py out/gguf-test/results.jsonl out/gguf-test/candidates.jsonl --run-manifest out/gguf-test/run.json
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ always() && inputs.mode == 'gguf-test' }}
         with:
           name: chuckles-gguf-test
           path: out/gguf-test

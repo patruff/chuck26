@@ -11,10 +11,12 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
 import requests
+from march_source import BANK_URL, NOTEBOOK, preflight, snapshot_bank
 
 PIPELINE = Path(__file__).resolve().parent
 MODEL = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF"
@@ -24,8 +26,6 @@ SHA256 = "9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61"
 # llama.cpp b12182, CUDA 12.8, linux/amd64.
 IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:859efa314dc34f1843a38ff28a4818aeac51a4cce125bdea4d2678aceba95469"
 PODS = "https://rest.runpod.io/v1/pods"
-MARCH_BANK_SHA256 = "c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff"
-MARCH_BANK_URL = "https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py"
 
 
 def utc_now():
@@ -95,16 +95,18 @@ def wait_ready(api, pod_id, endpoint, headers, deadline):
     raise TimeoutError("The GGUF server did not become ready in time")
 
 
-def main():
+def main(private_dir):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--titles", type=Path, default=PIPELINE / "movie_titles_1995_1999.csv")
+    p.add_argument("--titles", type=Path, help="Input CSV with a title column")
     p.add_argument("--limit", type=int, default=10)
-    p.add_argument("--output-dir", type=Path, required=True, help="New directory for this run")
+    p.add_argument("--output-dir", type=Path, help="New directory for this run")
+    p.add_argument("--preflight-only", action="store_true", help="Verify the 2025 bank and tools on CPU and exit")
     sources = p.add_mutually_exclusive_group()
     sources.add_argument("--march-word-bank", type=Path, metavar="WORD_STRUCTURES.PY",
                          help="Run CodeAgent with the March word bank and custom pronunciations")
     sources.add_argument("--colab-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
                          help="Run CodeAgent with the Colab funny_words list and 0.8 suggestion cutoff")
+    sources.add_argument("--base-only", action="store_true", help="Use the original single-answer GGUF baseline")
     p.add_argument("--example-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
                    help="With --march-word-bank, replay the saved Running Man cell and both finalists' word checks")
     p.add_argument("--humor-first", action="store_true",
@@ -112,9 +114,30 @@ def main():
     p.add_argument("--drafts-from", type=Path, help="Reuse initial pre-score drafts from an earlier humor-first run")
     p.add_argument("--gpu", default="NVIDIA GeForce RTX 4090,NVIDIA GeForce RTX 3090,NVIDIA RTX A6000,NVIDIA A40",
                    help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
-    p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="COMMUNITY")
-    p.add_argument("--timeout-mins", type=int, default=25)
+    p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="SECURE")
+    p.add_argument("--timeout-mins", type=int, default=80)
     args = p.parse_args()
+    production = not (args.base_only or args.colab_notebook)
+    if not production and (args.example_notebook or args.humor_first or args.preflight_only):
+        p.error("The humor-first notebook and preflight require the 2025 bank")
+    if production:
+        try:
+            args.march_word_bank = snapshot_bank(args.march_word_bank, private_dir)
+        except (ValueError, OSError, requests.RequestException, subprocess.TimeoutExpired) as exc:
+            p.error(str(exc))
+        if args.example_notebook is None:
+            args.example_notebook = NOTEBOOK
+            args.humor_first = True
+        if not args.example_notebook.is_file():
+            p.error("Example notebook file does not exist")
+        controls = preflight(args.march_word_bank)
+        print(json.dumps(controls, indent=2), flush=True)
+        if args.preflight_only:
+            return
+    if args.output_dir is None:
+        p.error("A GPU run requires --output-dir")
+    if args.titles is None:
+        args.titles = PIPELINE / ("humor_sample_titles.csv" if production else "movie_titles_1995_1999.csv")
     if args.limit < 1 or args.timeout_mins < 1 or not args.titles.is_file():
         p.error("Use an existing titles CSV, a positive limit and a positive timeout")
     if not os.getenv("RUNPOD_API_KEY"):
@@ -145,8 +168,8 @@ def main():
         meta.update(profile="colab-codeagent" if args.colab_notebook else "march-codeagent",
                     source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                     suggestion_cutoff=0.8 if args.colab_notebook else 0.6)
-        if args.march_word_bank and meta["source_sha256"] == MARCH_BANK_SHA256:
-            meta["word_bank_url"] = MARCH_BANK_URL
+        if production:
+            meta.update(word_bank_url=BANK_URL, preflight=controls)
     if args.example_notebook:
         meta.update(profile="running-man-codeagent",
                     notebook_sha256=hashlib.sha256(args.example_notebook.read_bytes()).hexdigest())
@@ -183,7 +206,8 @@ def main():
         meta.update(ready_at=utc_now(), gpu=(info.get("machine") or {}).get("gpuTypeId"))
         save()
         env = {**os.environ, "LLAMA_API_KEY": server_key}
-        del env["RUNPOD_API_KEY"]
+        for name in ("RUNPOD_API_KEY", "CHUCKLES_2025_BANK_GZ", "CHUCK2025_READ_TOKEN"):
+            env.pop(name, None)
         if source:
             option = "--colab-notebook" if args.colab_notebook else "--word-bank"
             generator = [str(PIPELINE / "generate_march.py"), option, str(source)]
@@ -221,4 +245,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with tempfile.TemporaryDirectory(prefix="chuckles-2025-") as directory:
+        main(Path(directory))

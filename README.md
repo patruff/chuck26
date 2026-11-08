@@ -4,6 +4,12 @@ Phonetically-sound parody title generator with DPO preference dataset output.
 
 Generates funny parody titles (e.g. "The Matrix" -> "The Mattress") using AI agents with phonetic verification tools, then provides workflows for human review and DPO (Direct Preference Optimization) dataset creation.
 
+## Qwen 27B on RunPod
+
+The 27B workflow uses the pinned 2025 suggested words and pronunciations. Run
+the corrected notebook in Colab or select **gguf-test** in GitHub Actions.
+[Open in Colab](https://colab.research.google.com/github/patruff/chuck26/blob/main/notebooks/Chuckles_RunPod.ipynb) · [Notebook source](notebooks/Chuckles_RunPod.ipynb) · [Ten-movie results and reasoning traces](results/2026-11-08-qwen-27b/README.md)
+
 ## Generating a DPO Dataset: Step-by-Step
 
 There are two workflows for reviewing parodies and building DPO data: **GitHub PR-based** and **Google Drive-based**. Both track provenance (model name, adapter/LoRA) for every candidate.
@@ -257,126 +263,70 @@ python pipeline/run_pipeline.py --down <pod-id>
 `pipeline/generate_with_reasoning.py` can also run anywhere with a GPU to
 try the adapter on any titles CSV.
 
-### Test the Qwen3.8 27B GGUF on RunPod
+### Run the Qwen3.8 27B GGUF
 
-Select **gguf-test** in the Reasoning SFT Pipeline's **mode** menu, or run the
-command below from the repo with `RUNPOD_API_KEY` set. It rents one GPU for
-inference with the pinned
-[`RVN-Q4_K_M-multilingual.gguf`](https://huggingface.co/0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF)
-weights, verifies the download, and terminates the pod after generation.
-
-```bash
-pip install -e . 'setuptools<81'
-python pipeline/run_gguf_test.py --limit 10 --output-dir out/gguf-01
-```
-
-The default sample uses the first ten titles in `pipeline/movie_titles_1995_1999.csv`.
-Pass `--titles` to supply another CSV with a `title` column. Use a new output
-directory for each run. The default time limit is 25 minutes.
-
-`results.jsonl` includes the parody, model-emitted reasoning, supplied
-suggestions, raw assistant message and independently computed phonetic scores
-for each title. The scoring tool aligns words by position, so inspect titles
-that gain or lose words. Numbers written by the model in its trace can differ
-from the scores in `swap_scores`. The run configuration and pod teardown
-status are in `run.json`. GitHub Actions collects both files in the
-`chuckles-gguf-test` artifact.
-
-### Run the Chuckles smolagents CodeAgent
-
-To replay the saved **The Running Man** demonstration, provide the local
-export of `Copy of may18CerebrasQwen3.ipynb` and the March word bank.
+**Actions → Reasoning SFT Pipeline → gguf-test** and the CLI use the same
+smolagents CodeAgent, corrected Colab prompt and checksum-verified March 2025
+bank. The defaults are one Secure Cloud GPU, the ten films in
+`pipeline/humor_sample_titles.csv`, and an 80-minute limit. Use
+`infer_limit=1` for a smoke test. The workflow uploads its run manifest,
+generation traces and screened training candidates as the `chuckles-gguf-test`
+artifact. **gguf-preflight** runs the historical controls on CPU.
 
 ```bash
-python pipeline/run_gguf_test.py \
-  --example-notebook may18CerebrasQwen3.ipynb \
-  --march-word-bank ../chuck2025/word_structures.py --cloud SECURE \
-  --titles example-titles.csv --limit 1 --output-dir out/gguf-running-man-01
+pip install -e '.[trace-export]' 'smolagents==1.24.0' 'huggingface-hub==0.36.0' 'setuptools<81'
+python pipeline/run_gguf_test.py --preflight-only
+# Set RUNPOD_API_KEY in the environment before the GPU run.
+python pipeline/run_gguf_test.py --limit 1 --output-dir out/chuckles-01
+python pipeline/export_humor_candidates.py out/chuckles-01/results.jsonl out/chuckles-01/candidates.jsonl \
+  --run-manifest out/chuckles-01/run.json
 ```
 
-Put `The Running Man` under the `title` header of the input CSV. This mode
-renders the original creative and verification prompt from cell `tbAjK5rX4tjo`,
-using the two matching HF tool revisions, the 0.6 suggestion cutoff, and custom
-pronunciations. CodeAgent adds its executable action and result format.
-It records every word pair for both finalists, including unchanged words.
-The saved cell asks for scores above 0.8 and elsewhere gives 0.6 as the
-fallback threshold. Inspect the actual scores for both.
+The bank comes from `word_structures.py` at commit `783c529` in
+`patruff/chuck2025`. The launcher accepts `--march-word-bank PATH`, an
+encrypted Actions secret named `CHUCKLES_2025_BANK_GZ` (base64 of the gzip
+file), a sibling `chuck2025` checkout, `CHUCK2025_READ_TOKEN`, or an
+authenticated GitHub CLI. It verifies SHA-256
+`c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff`
+and checks the original Running Man suggestions and scorer values before
+renting a GPU. The private source stays on the controller. The smaller
+`parodies2026/word_structures.py` in this repo has 226 words and four custom
+pronunciations. [Canonical bank](https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py)
 
-For a humor-first batch, use the other saved cell, `GvGq8GcoGbCD`. This mode
-uses the March `parody-suggestions` similarity as an inclusive 0.60 floor
-for changed words. It also reports the separate `word-phone` rhyme score.
-Unchanged words count as identities and are labeled. Qwen records three or four original
-pitches, its own humor ratings, and its two funniest titles before using
-`word_phone_tool`. Within the eligible finalists, Qwen picks the winner. If
-neither qualifies, it revises; an unsuccessful revision is flagged in the results.
+To provision the Actions secret in another checkout, use an authenticated
+GitHub CLI with permission to set repository secrets:
 
 ```bash
-python pipeline/run_gguf_test.py --humor-first \
-  --example-notebook may18CerebrasQwen3.ipynb \
-  --march-word-bank ../chuck2025/word_structures.py --cloud SECURE \
-  --titles pipeline/humor_sample_titles.csv --limit 10 --timeout-mins 80 --output-dir out/humor-01
-python pipeline/export_humor_candidates.py out/humor-01/results.jsonl out/humor-01/candidates.jsonl
+gzip -c ../chuck2025/word_structures.py | base64 | tr -d '\n' | gh secret set CHUCKLES_2025_BANK_GZ --repo patruff/chuck26
 ```
 
-The export contains one prompt/completion pair per clean agent turn from a
-qualifying run, with the model's reasoning and code as separate fields. It
-keeps the observations in their original positions in the conversation. All
-exported turns start with `review_status: unreviewed`. For a stricter export, install `pip install -e ".[trace-export]"` and pass
-`--tokenizer-json TOKENIZER.json --thinking-budget 1536` to omit targets that
-come within four tokens of the thinking budget. Supply `--reviews labels.jsonl`
-to export only titles marked keep in the matching review file. The raw results keep
-failed checks, revisions, and unsuccessful runs for inspection.
+Qwen records three or four distinct pitches, each with a humor rating and
+comic premise, then nominates its two funniest word-aligned titles. CodeAgent
+checks the exact spelling of each word in both finalists. Each changed word
+needs at least 0.60 from the pinned March `parody-suggestions` formula.
+`word-phone` supplies an independent rhyme/length/stress score. Once both
+titles qualify, the model chooses on humor. If revised finalists also fail,
+`qualifying_parody` is null and `fallback` identifies the model's best failed
+attempt. Only observed, qualifying results can enter the review-candidate export.
 
-The source word bank is [`patruff/chuck2025/word_structures.py`](https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py)
-at SHA-256 `c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff`.
-It contains 1,565 words and custom pronunciations. The similarly named
-`parodies2026/word_structures.py` in this repo has a smaller bank.
+The archived tool check gives 0.665 and 1.000 for *running → cumming*.
+*Running → huning* gets 0.830 and 1.000; *running → hunning* is unscorable
+in both tools. Each draft must explain what its changed phrase means and what
+makes the scene funny. The full controls and the rejected *Hunning* example
+are in the [batch findings](results/2026-11-08-qwen-27b/README.md).
 
-To compare the saved Colab code and the complete Running Man suggestion
-payload before a GPU run, use the CPU-only check. Pass `--pasted-example` to
-compare a saved console excerpt too.
+To replay the original Drive notebook, pass its local export with
+`--example-notebook`; add `--humor-first` for the two-phase batch.
+`--colab-notebook` selects the separate historical 0.80/321-entry experiment,
+and `--base-only` selects the old single-answer baseline. For a paired
+comparison, `--drafts-from results.jsonl` reuses only matching, pre-verification
+pitches. To compare the pinned tools' Python and complete Running Man input
+with the saved original notebook, run:
 
 ```bash
 python pipeline/check_colab_replay.py --example-notebook may18CerebrasQwen3.ipynb \
   --word-bank ../chuck2025/word_structures.py
 ```
-
-The archived check for `running → cumming` returns 0.665 from the suggestions
-tool and 1.000 from word-phone. For `man → klan`, the pair is 0.638 and
-0.925. The full word list, rather than the similarity formula, differs in the
-January 2026 `parodies2026` copy.
-
-For a paired comparison, `--drafts-from results.jsonl` carries forward each
-available title’s original pre-verification pitches and nominations. The model
-receives those pitches without the earlier winner or verifier results. It checks
-both finalists with the two pinned tools and selects again. Missing titles get
-new drafts. Creative and later selection turns retain their original histories.
-
-Use the local export of the `unslothQwQ4bitGOOD` notebook to replay its
-“As Good As It Gets” setup on the 27B GGUF. The runner reads the literal
-`funny_words` list without executing notebook cells. It uses the 0.8
-suggestion cutoff and the two HF tool revisions whose Python source matches
-the archived cell output.
-
-```bash
-python pipeline/run_gguf_test.py \
-  --colab-notebook unslothQwQ4bitGOOD.ipynb --cloud SECURE \
-  --titles titles.csv --limit 3 --output-dir out/gguf-colab-01
-```
-
-For the March bank of 1,565 words and custom pronunciations, substitute
-`--march-word-bank ../chuck2025/word_structures.py`. That profile uses the
-existing Hub tools and a 0.6 suggestion cutoff. The March bank is available
-in `patruff/chuck2025` at commit `783c529`.
-
-Both profiles use `parody-suggestions` before generation. Qwen writes Python
-actions in CodeAgent to call `word_phone_tool`, reads the observations, and
-selects its winner with `final_answer`. Each JSONL record contains the input
-suggestions, step-by-step code, model reasoning, tool returns, errors,
-observations, and the winner and runner-up. Scores are copied from observed
-tool returns. Missing pronunciations yield null. A score of 1.12 is possible
-in the archived Colab formula. The `passes_threshold` field is a separate
-diagnostic for aligned word swaps and never ranks humor.
 
 ## Project Structure
 
