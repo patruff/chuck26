@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import re
 
-from humor_batch import suggested_pairs, title_changes
+from common import suggested_pairs, title_changes
 
 
 def bank_use(row, title):

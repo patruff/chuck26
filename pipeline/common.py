@@ -94,6 +94,20 @@ def clean_word(word: str) -> str:
     return word.lower().strip(string.punctuation)
 
 
+def suggested_pairs(results):
+    """Use only exact replacements actually returned for the matching source word."""
+    return {(clean_word(word), clean_word(item["word"]))
+            for word, result in results.items() for item in result.get("suggestions", [])
+            if clean_word(word) != clean_word(item["word"])}
+
+
+def title_changes(original, parody):
+    before, after = original.split(), parody.split()
+    if len(before) != len(after):
+        return []
+    return [(clean_word(a), clean_word(b)) for a, b in zip(before, after) if clean_word(a) != clean_word(b)]
+
+
 def align_swaps(original: str, parody: str) -> list[tuple[str, str]]:
     """Find (original_word, replacement_word) pairs between title and parody.
 

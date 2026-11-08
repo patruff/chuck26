@@ -12,3 +12,6 @@ build/
 /data/*.json
 .headroom/
 .venv*/
+
+/reviews/.review.lock
+/reviews/.pending-film-preferences.jsonl

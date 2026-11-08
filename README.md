@@ -4,6 +4,32 @@ Phonetically-sound parody title generator with DPO preference dataset output.
 
 Generates funny parody titles (e.g. "The Matrix" -> "The Mattress") using AI agents with phonetic verification tools, then provides workflows for human review and DPO (Direct Preference Optimization) dataset creation.
 
+## Review film parodies and export DPO
+
+Run the local Python app from a checkout. It needs Flask and Python 3.10+ on macOS or Linux.
+
+```bash
+python -m pip install 'Flask>=3'
+python scripts/review_films.py
+```
+
+Open **http://127.0.0.1:5118**. Select the recent feedback run or the ranked film collection. Each movie shows two distinct parodies, pitches, changed-word scores and whether each swap came from the 2025 suggestions. Expand a trace to see Qwen’s thinking, executed Python and actual tool returns. The recent run compares two finalists from the same trajectory. The 200-film batch samples separate trajectories with different seeds. If both trajectories pick the same title, the app uses a distinct verified finalist from one of them and retains the original trace.
+
+Choose **Prefer A**, **Prefer B**, or **Neither works**, add an optional comment and save. The app moves to the next unreviewed movie. Jump back to change or clear a vote. Your selections are saved locally after each review.
+
+| File | What it contains |
+| --- | --- |
+| [reviews/reviewed_dpo.jsonl](reviews/reviewed_dpo.jsonl) | One conversational `prompt`, `chosen`, and `rejected` row per human A/B preference, with the feedback, film metadata and the two trace references. |
+| [reviews/film_preferences.jsonl](reviews/film_preferences.jsonl) | The review backup, including comments on pairs where neither joke worked. |
+
+The files start empty. Only a saved human preference produces a training row. Tool traces stay in the generation files, linked by file path, seed and record hash. The DPO responses contain the final titles. Download either file in the app, or add the two JSONL files to the repository after reviewing. **Transfer reviews** imports a backup or an app-exported DPO file and checks that it matches the displayed pair.
+
+To review another RunPod artifact, pass `--input /path/to/results.jsonl`, a compressed JSONL or a directory of paired sample files. You can repeat the flag. To keep a separate set of labels, pass `--reviews /path/to/reviews`.
+
+The ranked list covers releases in 1990–2015 inclusive, ordered by number of ratings in MovieLens 32M. The **paired-film-review** Action checkpoints each side independently and can restore the sample files from a previous workflow run. [Film list](pipeline/film_lists/top200_1990_2015.csv) · [Ranking method](pipeline/film_lists/README.md) · [Recent feedback run](results/feedback-0c3cc72/README.md)
+
+When you are ready to fine-tune in the repo’s configured training environment, its existing DPO trainer accepts `python training/train_dpo.py --dataset reviews/reviewed_dpo.jsonl`. The review app itself only writes data.
+
 ## Qwen 27B on RunPod
 
 The 27B workflow uses the pinned 2025 suggested words and pronunciations. Run

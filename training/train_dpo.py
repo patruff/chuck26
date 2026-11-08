@@ -32,8 +32,10 @@ Hyperparameter tuning notes:
     - For very small datasets (<50 rows), consider reducing epochs to 1-2
 """
 
+import argparse
 import os
 import sys
+from pathlib import Path
 
 from datasets import load_dataset
 from trl import DPOConfig, DPOTrainer
@@ -113,7 +115,7 @@ def load_model():
 # Dataset Loading and Verification
 # =============================================================================
 
-def load_and_verify_dataset(tokenizer):
+def load_and_verify_dataset(tokenizer, dataset_name=DATASET_NAME):
     """Load the DPO dataset from Hub and verify chat template format.
 
     The dataset must be in TRL conversational preference format:
@@ -130,9 +132,17 @@ def load_and_verify_dataset(tokenizer):
     print(" Loading Dataset")
     print("=" * 60)
 
-    dataset = load_dataset(DATASET_NAME, split="train")
+    path = Path(dataset_name)
+    if path.is_file():
+        dataset = load_dataset("json", data_files=str(path), split="train")
+        required = ["prompt", "chosen", "rejected"]
+        if not dataset.num_rows or not set(required).issubset(dataset.column_names):
+            raise ValueError("The review file needs at least one conversational preference row.")
+        dataset = dataset.select_columns(required)
+    else:
+        dataset = load_dataset(dataset_name, split="train")
 
-    print(f"  Dataset: {DATASET_NAME}")
+    print(f"  Dataset: {dataset_name}")
     print(f"  Rows: {dataset.num_rows}")
     print(f"  Columns: {dataset.column_names}")
     print()
@@ -301,6 +311,11 @@ def save_and_push(model, tokenizer):
 # =============================================================================
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", default=DATASET_NAME, help="Reviewed JSONL file or Hugging Face dataset")
+    args = parser.parse_args()
+    if args.dataset.endswith(".jsonl") and (not Path(args.dataset).is_file() or not Path(args.dataset).stat().st_size):
+        parser.error("Choose a nonempty reviewed DPO file after saving preferences.")
     # Verify HF_TOKEN is available (needed for dataset download and Hub push)
     if "HF_TOKEN" not in os.environ:
         print("ERROR: HF_TOKEN environment variable is not set.")
@@ -308,6 +323,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     model, tokenizer = load_model()
-    dataset = load_and_verify_dataset(tokenizer)
+    dataset = load_and_verify_dataset(tokenizer, args.dataset)
     model, tokenizer = train(model, tokenizer, dataset)
     save_and_push(model, tokenizer)

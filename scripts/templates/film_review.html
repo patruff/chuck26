@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ pair.film.title }} · Chuckles review</title>
+  <link rel="stylesheet" href="{{ url_for('static',filename='film_review.css') }}">
+</head>
+<body>
+<header class="mast"><div class="frame bar"><a class="brand" href="{{url_for('index')}}">Chuckles<span>.</span></a><span class="mast-name">Film review</span><a class="download" href="{{url_for('download',kind='dpo')}}">Download DPO ↓</a></div></header>
+<main class="frame">
+  <nav class="toolbar" aria-label="Review collection">
+    <form action="{{ url_for('index') }}">
+      <label for="batch">Collection</label>
+      <select id="batch" name="set" onchange="this.form.submit()">
+        {% for name in collections %}<option value="{{name}}" {% if name==collection %}selected{% endif %}>{{ 'Top 200 · 1990–2015' if name=='movielens-200' else ('Recent feedback run' if name=='feedback-0c3cc72' else name) }}</option>{% endfor %}
+      </select><noscript><button>Open</button></noscript>
+    </form>
+    <div class="progress"><span>{{reviewed}} / {{group|length}} reviewed</span><progress value="{{reviewed}}" max="{{group|length}}"></progress></div>
+  </nav>
+  <div class="film-header">
+    <div class="film-meta">Film {{pos+1}} of {{group|length}}{% if pair.film.year %} <span>•</span> {{pair.film.year}}{% endif %}</div>
+    <h1>{{pair.film.title}}</h1>
+    <div class="film-nav">
+      {% if pos>0 %}<a aria-label="Previous film" href="{{url_for('index',set=collection,pair=group[pos-1].id)}}">← Previous</a>{% endif %}
+      <form action="{{url_for('index')}}" class="jump">
+        <input type="hidden" name="set" value="{{collection}}">
+        <label class="sr" for="jump">Jump to film</label><select name="pair" id="jump" onchange="this.form.submit()">
+        {% for film in group %}<option value="{{film.id}}" {% if film.id==pair.id %}selected{% endif %}>{{loop.index}}. {{film.film.title}}</option>{% endfor %}</select><noscript><button>Go</button></noscript>
+      </form>{% if pos+1<group|length %}<a aria-label="Next film" href="{{url_for('index',set=collection,pair=group[pos+1].id)}}">Next →</a>{% endif %}
+    </div>
+  </div>
+  <div class="options">
+    {% for side in pair.sides %}
+    <article class="option">
+      <div class="option-top"><span>Option {{'AB'[loop.index0]}}</span><span class="status {{'hit' if side.passed else 'miss'}}">{{'Clears 0.60' if side.passed else 'Below floor'}}</span></div>
+      <h2>{{side.title}}</h2><p class="pitch">{{side.why}}</p>
+      <table><caption>Changed words</caption><thead><tr><th>Swap</th><th>March</th><th>Word-phone</th></tr></thead><tbody>
+      {% for p in side.pairs if p.word!=p.compare_to %}<tr><td>{{p.word}} → {{p.compare_to}}<small class="word-source">{{"Suggested" if p.compare_to in side.listed.get(p.word,[]) else "Off-list"}}</small></td><td>{{'%.3f'|format(p.suggestion_score) if p.suggestion_score is number else '—'}}</td><td>{{'%.3f'|format(p.word_phone_score) if p.word_phone_score is number else '—'}}</td></tr>{% endfor %}
+      </tbody></table>
+      {% if not pair.shared_trace %}<details class="trace"><summary>Reasoning and tool calls</summary><pre>{{side.trace}}</pre></details>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% if pair.shared_trace %}<details class="trace shared"><summary>Shared reasoning and tool calls for both finalists</summary><pre>{{pair.sides[0].trace}}</pre></details>{% endif %}
+  <section class="decision">
+    <div class="section-head"><h2>Your preference</h2>{% if notice %}<span role="status">{{notice}}</span>{% endif %}</div>
+    <form action="{{url_for('vote',pair_id=pair.id)}}" method="post">
+      <input type="hidden" name="expected" value="{{decision.get('updated','')}}">
+      <fieldset><legend class="sr">Which title works better?</legend>
+        {% for key,title in [('a','Prefer A'),('b','Prefer B'),('neither','Neither works')] %}
+        <label class="radio"><input required type="radio" name="choice" value="{{key}}" {% if decision.get('choice')==key %}checked{% endif %}><span>{{title}}</span></label>{% endfor %}
+      </fieldset>
+      <label for="feedback">Your feedback <small>optional</small></label>
+      <textarea id="feedback" name="feedback" rows="3" placeholder="What landed or fell flat?">{{decision.get('feedback','')}}</textarea>
+      <div class="actions"><button type="submit" class="primary">Save review →</button></div>
+    </form>
+    {% if decision %}<form action="{{url_for('vote',pair_id=pair.id)}}" method="post" class="clear"><input type="hidden" name="choice" value="clear"><input type="hidden" name="expected" value="{{decision.updated}}"><button>Clear this review</button></form>{% endif %}
+  </section>
+  <details class="manage"><summary>Transfer reviews</summary>
+    <a href="{{url_for('download',kind='preferences')}}">Download decisions and comments</a>
+    <form action="{{url_for('import_reviews')}}" method="post" enctype="multipart/form-data"><label>Import decisions or reviewed DPO <input type="file" accept=".jsonl,.ndjson" name="preferences" required></label><button>Import reviews</button></form>
+  </details>
+</main>
+</body></html>

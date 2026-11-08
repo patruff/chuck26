@@ -1,22 +1,8 @@
 """Record CodeAgent's comic pitches and nominations before it checks their sound."""
 import re
 
-from common import clean_word
+from common import clean_word, title_changes, suggested_pairs
 from smolagents import Tool
-
-
-def suggested_pairs(results):
-    """Use only exact replacements actually returned for the matching source word."""
-    return {(clean_word(word), clean_word(item["word"]))
-            for word, result in results.items() for item in result.get("suggestions", [])
-            if clean_word(word) != clean_word(item["word"])}
-
-
-def title_changes(original, parody):
-    before, after = original.split(), parody.split()
-    if len(before) != len(after):
-        return []
-    return [(clean_word(a), clean_word(b)) for a, b in zip(before, after) if clean_word(a) != clean_word(b)]
 
 
 class RecordDrafts(Tool):
