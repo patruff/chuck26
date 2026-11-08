@@ -13,3 +13,11 @@ MODEL_RUN:
 
 HUMAN_FEEDBACK:
 I don't like the Hunning result since it doesn't make sense.
+
+MODEL_RUN:
+  Toy Story → Toy Gory. The tool had returned five swaps for "toy"; Qwen left "toy" alone and invented "gory" for "story".
+  Top Gun → Cop Fun. "cop" was returned for "top", but "fun" was not returned for "gun".
+  Source: results/2026-11-08-human-guidance/results.jsonl
+
+HUMAN_FEEDBACK:
+The original Colab reasoning worked better. These choices feel tame. Start from the actual suggested words, go for a much wilder joke that lands in the title, and show which words, tool calls and observations led to the choice.

@@ -44,7 +44,23 @@ jobs:
       - name: Export turns for human review
         run: python pipeline/export_humor_candidates.py out/human-guidance/results.jsonl out/human-guidance/candidates.jsonl --run-manifest out/human-guidance/run.json
       - uses: actions/upload-artifact@v4
+        id: upload
         if: always()
         with:
           name: human-guidance
           path: out/human-guidance
+      - name: Show the first full transcript on the run page
+        if: always()
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(out/human-guidance/transcripts/*.md)
+          if (( ${#files[@]} > 0 )); then
+            echo "[Download all movie transcripts and the editable feedback file]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
+            if [[ $(wc -c < "${files[0]}") -lt 950000 ]]; then
+              echo >> "$GITHUB_STEP_SUMMARY"
+              cat "${files[0]}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi

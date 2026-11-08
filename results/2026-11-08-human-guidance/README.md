@@ -27,6 +27,8 @@ For *Toy Gory*, Qwen pitched a needle-toothed teddy bear and oozing button eyes.
 
 ## Review this run
 
+[Read the complete Qwen thinking, Python calls and tool returns for each movie](TRACE-INDEX.md). These transcripts were rendered from this run’s original JSONL.
+
 The export contains 13 unreviewed candidate turns. The full traces include the alternatives, pitches, system messages, model reasoning and observations from both phonetic tools. The NVIDIA GeForce RTX 4090 pod was terminated after the run. Estimated compute cost was $0.34. [Raw traces](results.jsonl) · [Candidate turns](candidates.jsonl) · [Run settings and bank checks](run.json) · [GitHub Action](https://github.com/patruff/chuck26/actions/runs/42457715573)
 
 To give the next round feedback, copy [next-feedback.txt](next-feedback.txt) over [guidance/human-feedback.txt](../../guidance/human-feedback.txt), write under the blank `HUMAN_FEEDBACK:` lines for the movies you want to review, and commit to `main`. Each movie includes its drafts and a final-step trace excerpt.

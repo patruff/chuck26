@@ -13,8 +13,9 @@ from generate_with_reasoning import read_titles
 from chuckles_prime.tools import load_parody_tools
 from smolagents import ActionStep, CodeAgent, OpenAIModel, Tool, load_tool
 from smolagents.monitoring import LogLevel
-from humor_batch import RecordDrafts, clears_phonetic_floor
+from humor_batch import RecordDrafts, clears_phonetic_floor, suggested_pairs, title_changes
 from human_guidance import BASE_INSTRUCTIONS, revise_prompt, write_next_feedback
+from trace_review import write_transcripts
 from march_source import BANK_SHA256, BANK_URL, NOTEBOOK
 
 # These Hub sources match the tool classes printed in the linked Colab's saved output.
@@ -197,7 +198,8 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
     phone = WordPhoneTool(analyzer, phones, suggester if humor_first else None)
     agent_tools = [phone]
     if humor_first:
-        phone.drafts = RecordDrafts(title, phone.calls)
+        listed = suggested_pairs(suggested) if not previous_drafts else set()
+        phone.drafts = RecordDrafts(title, phone.calls, listed)
         agent_tools.append(phone.drafts)
         record["draft_rounds"] = phone.drafts.rounds
         if previous_drafts:
@@ -286,6 +288,10 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
                 original = [clean_word(w) for w in title.split()]
                 def passes(t):
                     return clears_phonetic_floor(original, [clean_word(w) for w in t.split()], observed, MIN_PHONETIC_SCORE)
+                if (listed and not listed.intersection(title_changes(title, result["winner"]))
+                        and listed.intersection(title_changes(title, result["runner_up"])) and passes(result["runner_up"])):
+                    raise ValueError("The suggested-word finalist clears 0.60. Choose it, or record a funnier "
+                                     "suggested-word finalist and verify its exact changes.")
                 if not passes(result["winner"]):
                     if passes(result["runner_up"]):
                         raise ValueError("The proposed winner misses 0.60. Choose the eligible finalist or revise.")
@@ -331,8 +337,12 @@ and the two titles you personally find funniest. Save the full premises before m
 Go for the uncomfortable, dirty or dark double meaning when it makes a better joke. Give the image or premise
 that made you laugh. A proposed title must mean something to the audience. Explain what the changed phrase
 means and the scene it suggests. Discard a respelling if its only appeal is how it sounds.
-You can invent a better swap than the suggestions. Check its actual spelling: a neighboring suggestion's
-pronunciation or score cannot verify a different word.
+Read the returned words for each original word. Try several of those words on the movie; ask which one
+turns its best-known scene, character or central line into an outrageous double meaning you hear in the title.
+Compare the jokes before looking at scores. Nominate your funniest supplied-word pitch and the funniest
+remaining aligned pitch. Prefer a qualifying nominee using a supplied change. If there are no suggestions,
+invent your own; if every suggestion falls flat, pass skip_reason to record_drafts naming an actual returned
+word and why it fails comically. Check the exact spelling: a neighboring word's score cannot verify your swap.
 For each word of both nominees, execute print(word_phone_tool(word=original, compare_to=replacement)).
 Use a Python loop over zip(original_title.split(), finalist.split()). Only test these nominees; do not
 search over cross-products of words. The phonetic tool returns a dict.
@@ -489,8 +499,9 @@ def main():
             prompt = None
             if args.example_notebook:
                 row["reference_cell"] = HUMOR_BATCH_CELL if args.humor_first else RUNNING_MAN_CELL
+                prompt_suggestions = row["suggested_words"] if args.humor_first else suggested
                 prompt = running_man_prompt(args.example_notebook, title,
-                                            {w: suggested[clean_word(w)] for w in title.split()}, row["reference_cell"])
+                                            {w: prompt_suggestions[clean_word(w)] for w in title.split()}, row["reference_cell"])
             prior = previous.get(title)
             if prior and prior.get("suggestion_tool_results") != suggested:
                 row["draft_source_note"] = "Source suggestions differ; generated fresh pitches."
@@ -519,6 +530,8 @@ def main():
             if row.get("fallback"):
                 label = f"no qualifying winner (fallback: {row['fallback']})"
             print(f"{title} → {label}", flush=True)
+    if args.humor_first:
+        write_transcripts(Path(args.output), output_dir)
     if revision:
         write_next_feedback(output_dir, revision)
     if failed:

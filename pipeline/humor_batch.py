@@ -1,6 +1,22 @@
 """Record CodeAgent's comic pitches and nominations before it checks their sound."""
+import re
+
 from common import clean_word
 from smolagents import Tool
+
+
+def suggested_pairs(results):
+    """Use only exact replacements actually returned for the matching source word."""
+    return {(clean_word(word), clean_word(item["word"]))
+            for word, result in results.items() for item in result.get("suggestions", [])
+            if clean_word(word) != clean_word(item["word"])}
+
+
+def title_changes(original, parody):
+    before, after = original.split(), parody.split()
+    if len(before) != len(after):
+        return []
+    return [(clean_word(a), clean_word(b)) for a, b in zip(before, after) if clean_word(a) != clean_word(b)]
 
 
 class RecordDrafts(Tool):
@@ -11,16 +27,19 @@ class RecordDrafts(Tool):
     inputs = {
         "attempts": {"type": "array", "description": "List of dicts with title, humor (0–10), and why."},
         "finalists": {"type": "array", "description": "Two distinct titles from attempts, funniest first."},
+        "skip_reason": {"type": "string", "nullable": True, "description":
+                        "Only if no supplied swap makes a joke: name a returned word and explain what fails."},
     }
     output_type = "object"
 
-    def __init__(self, original, calls):
+    def __init__(self, original, calls, listed=()):
         super().__init__()
         self.original = original
         self.calls = calls
+        self.listed = set(listed)
         self.rounds = []
 
-    def forward(self, attempts: list, finalists: list) -> dict:
+    def forward(self, attempts: list, finalists: list, skip_reason: str | None = None) -> dict:
         if len(attempts) not in (3, 4):
             raise ValueError("Give three or four different pitches")
         drafts = []
@@ -41,11 +60,29 @@ class RecordDrafts(Tool):
         if any(len(t.split()) != len(self.original.split()) for t in finalists):
             raise ValueError("Choose finalists with the same word count so each source word can be checked")
         ratings = {a["title"]: a["humor"] for a in drafts}
-        other_ratings = [ratings[t] for t in titles if t not in finalists and len(t.split()) == len(self.original.split())]
-        if other_ratings and max(other_ratings) > min(ratings[t] for t in finalists):
+        aligned = [t for t in titles if len(t.split()) == len(self.original.split())]
+        in_list = [t for t in aligned if self.listed.intersection(title_changes(self.original, t))]
+        listed_finalists = [t for t in finalists if t in in_list]
+        if self.listed and not listed_finalists:
+            cited = set(re.findall(r"[\w'-]+", (skip_reason or "").casefold()))
+            if not cited.intersection(b for _, b in self.listed) or not skip_reason.strip():
+                raise ValueError("Pitch and nominate a returned swap for its own original word. If none makes a "
+                                 "joke, pass skip_reason naming a real suggestion and why it falls flat.")
+        # Reserve one finalist slot for the funniest supplied-word pitch. Rank the other slot on humor.
+        pool, open_slots = aligned, finalists
+        if listed_finalists:
+            best = max(listed_finalists, key=ratings.get)
+            if ratings[best] < max(ratings[t] for t in in_list):
+                raise ValueError("Nominate your highest-rated pitch using a returned suggestion.")
+            pool = [t for t in aligned if t != best]
+            open_slots = [t for t in finalists if t != best]
+        if any(ratings[t] > min(ratings[c] for c in open_slots) for t in pool if t not in finalists):
             raise ValueError("Nominate your two funniest word-aligned drafts by your own ratings. Ties are your choice.")
         result = {"round": len(self.rounds) + 1, "attempts": drafts, "finalists": list(finalists),
                   "prior_phone_calls": len(self.calls)}
+        if self.listed:
+            result.update(suggested_finalists=listed_finalists,
+                          skip_reason=skip_reason if not listed_finalists else None)
         self.rounds.append(result)
         return {"round": result["round"], "finalists": result["finalists"]}
 

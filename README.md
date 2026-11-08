@@ -23,11 +23,11 @@ HUMAN_FEEDBACK:
 The jokes should be more edgy and wild. The recent examples weren't extreme enough.
 ```
 
-The same Qwen 27B model first reads the examples and your comments and writes a revised set of creative instructions. Every movie's smolagents system prompt uses that revision. Short feedback is also quoted verbatim in the generation task. Each movie starts with fresh drafts and uses the verified 2025 suggestions, exact-spelling tool checks, and inclusive 0.60 floor. The revision applies at inference time.
+Qwen reads the examples and your comments and adds up to 60 words of creative direction to the original Colab comedy role. Every movie keeps the Colab's humor-first system instruction, explicit audience preferences, and the full ranked list of word suggestions and scores. Short feedback is also quoted verbatim in the generation task. Each movie starts with fresh drafts and uses the verified 2025 suggestions, exact-spelling tool checks, and inclusive 0.60 floor. The revision applies at inference time.
 
-Download the **human-guidance** artifact from the Action. `prompt-revision.json` shows the original and applied instructions. `results.jsonl` contains each draft, the model's reasoning, the actual system messages and phonetic observations. `candidates.jsonl` contains turns awaiting human review. The artifact also includes the original text and the exact input to the prompt editor. If you paste a very long trace, the editor retains its beginning and end and marks the omission. It preserves all human comments. Comments totaling more than 1,536 tokens inform the revision through the editor alone.
+Download the **human-guidance** artifact and open **TRACE-INDEX.md**. Each movie has a readable transcript. It starts with the controller’s actual suggestion lookup, then shows every recorded Qwen thinking block, executed Python, tool return, error, and final choice in order. `prompt-revision.json` shows the original and applied instructions. `results.jsonl` contains each draft, the model's reasoning, the actual system messages and phonetic observations. `candidates.jsonl` contains turns awaiting human review. The artifact also includes the original text and the exact input to the prompt editor. If you paste a very long trace, the editor retains its beginning and end and marks the omission. It preserves all human comments. Comments totaling more than 1,536 tokens inform the revision through the editor alone.
 
-For the next round, copy the artifact's **next-feedback.txt** over `guidance/human-feedback.txt`. It carries forward your comments and the model's previous style instructions, adds the new pitches and choices, and leaves a blank `HUMAN_FEEDBACK:` under each movie. Fill in the movies you want to comment on and commit the file. Newer comments take priority when your preferences change.
+For the next round, copy the artifact's **next-feedback.txt** over `guidance/human-feedback.txt`. It carries forward your comments and the model's previous style instructions, adds the complete step-by-step movie transcripts, and leaves a blank `HUMAN_FEEDBACK:` under each movie. Fill in the movies you want to comment on and commit the file. Newer comments take priority when your preferences change.
 
 The first guided batch used the feedback “more edgy and wild.” Eight of ten movies had qualifying winners. The before-and-after table, recorded prompt revision and editable review file are in the [first guided run](results/2026-11-08-human-guidance/README.md).
 
@@ -329,11 +329,11 @@ gzip -c ../chuck2025/word_structures.py | base64 | tr -d '\n' | gh secret set CH
 ```
 
 Qwen records three or four distinct pitches, each with a humor rating and
-comic premise, then nominates its two funniest word-aligned titles. CodeAgent
+comic premise, then nominates its funniest pitch using a returned swap and its funniest remaining word-aligned pitch. CodeAgent
 checks the exact spelling of each word in both finalists. Each changed word
 needs at least 0.60 from the pinned March `parody-suggestions` formula.
 `word-phone` supplies an independent rhyme/length/stress score. Once both
-titles qualify, the model chooses on humor. If revised finalists also fail,
+titles qualify, a title using a listed change takes priority over an entirely off-list title. Qwen chooses on humor between equally eligible titles. With no returned changes it can invent its own. To skip available suggestions it must name a returned word and explain why the suggestions fall flat. The transcript records that exception. If revised finalists also fail,
 `qualifying_parody` is null and `fallback` identifies the model's best failed
 attempt. Only observed, qualifying results can enter the review-candidate export.
 

@@ -193,6 +193,7 @@ def test_humor_first_records_the_jokes_before_looking_at_scores(guided):
                 'print(word_phone_tool("Park", "Pork"))',
                 f'print(record_drafts({drafts!r}, ["Pork", "Lark"]))\n'
                 'for w in ["Pork", "Lark"]:\n    print(word_phone_tool("Park", w))',
+                'final_answer({"winner":"Lark","runner_up":"Pork","explanation":"I like the unlisted title"})',
                 'final_answer({"winner":"Pork","runner_up":"Lark","explanation":"the stronger joke"})',
             ])
 
@@ -207,13 +208,15 @@ def test_humor_first_records_the_jokes_before_looking_at_scores(guided):
     row = {}
     revision = {"applied_instructions": "Give the joke higher stakes.", "task_comments": ["Go wilder."],
                 "applied_instructions_sha256": "fixture-style", "feedback_sha256": "fixture-input"} if guided else None
-    run_agent(Script(), "Park", {}, {}, analyzer, row, "scores > 0.8 and scores > 0.6", True, suggester,
+    suggested = {"park": {"suggestions": [{"word": "pork", "similarity": 0.6}]}}
+    run_agent(Script(), "Park", suggested, {}, analyzer, row, "scores > 0.8 and scores > 0.6", True, suggester,
               revision=revision)
     assert row["state"] == "success" and row["parody"] == "Pork" and row["passes_threshold"]
     assert row["steps"][0]["error"] and row["draft_rounds"][0]["prior_phone_calls"] == 0
     assert row["draft_rounds"][0]["attempts"] == drafts
     assert row["finalist_checks"]["Pork"][0]["score"] == 0.6
     assert row["finalist_checks"]["Lark"][0]["score"] == 1.0
+    assert "suggested-word finalist" in row["steps"][-2]["error"]
     assert "0.8" not in row["task"] and row["steps"][-1]["input_messages"]
     if guided:
         assert "Go wilder." in row["task"]
