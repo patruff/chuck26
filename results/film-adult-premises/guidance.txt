@@ -1,0 +1,8 @@
+MODEL_RUN:
+  Top Gun → Pop Gun. The pitch turned the dogfight into a children's party. Earlier runs of The Running Man tried both The Cumming Man and The Cumming Klan.
+HUMAN_FEEDBACK:
+The Cumming Man is okay but The Cumming Klan is better since it involves both racism (KKK) and vulgarity (ejaculation) you get points for combination (also the phonetics are fine).
+HUMAN_FEEDBACK:
+Again these are way too tame, not edgy or adult-themed enough.
+HUMAN_FEEDBACK:
+I don't like the Hunning result since it doesn't make sense.

@@ -17,6 +17,10 @@ on:
         description: Committed results directory containing matching guidance.txt and prompt-revision.json
         default: results/feedback-0c3cc72
         type: string
+      ranks:
+        description: Optional JSON array of specific MovieLens ranks (with shards set to [0])
+        default: '[]'
+        type: string
 permissions:
   contents: read
   actions: read
@@ -33,6 +37,8 @@ jobs:
       PYTHONUNBUFFERED: '1'
       SHARD: ${{ matrix.shard }}
       SNAPSHOT: ${{ inputs.prompt_snapshot || 'results/feedback-0c3cc72' }}
+      SPECIAL_RANKS: ${{ inputs.ranks || '[]' }}
+      SHARDS: ${{ inputs.shards }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,12 +63,19 @@ jobs:
           mkdir -p out/samples
           if [[ -d restored/samples ]]; then cp -a restored/samples/. out/samples/; fi
           python - <<'PY'
-          import csv,os
+          import csv,json,os
           from pathlib import Path
           shard=int(os.environ['SHARD'])
           assert 0<=shard<8
           with Path('pipeline/film_lists/top200_1990_2015.csv').open() as f:
-              rows=list(csv.DictReader(f))[shard::8]
+              all_films=list(csv.DictReader(f))
+          selected=json.loads(os.environ['SPECIAL_RANKS'])
+          if selected:
+              assert json.loads(os.environ['SHARDS'])==[0]
+              assert all(type(n) is int and 1<=n<=len(all_films) for n in selected)
+              rows=[r for r in all_films if int(r['rank']) in selected]
+          else:
+              rows=all_films[shard::8]
           with Path('out/films.csv').open('w',newline='') as f:
               w=csv.DictWriter(f,rows[0]); w.writeheader(); w.writerows(rows)
           PY

@@ -390,6 +390,8 @@ Use the thinking channel for brainstorming. Keep executable actions in the CodeA
                       applied_instructions_sha256=revision["applied_instructions_sha256"])
         if revision["task_comments"]:
             task += "\n\nThe human reviewer's comments behind the creative direction:\n" + "\n\n".join(revision["task_comments"])
+        if revision.get("generation_scope"):
+            task += "\n\n" + revision["generation_scope"]
     record.update(task=task, steps=steps, tool_calls=phone.calls)
     result = agent.run(task)
     if result.state == "max_steps_error" and observed:

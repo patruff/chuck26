@@ -73,6 +73,10 @@ def transcript(row):
             lines.append("Earlier attempt ended with: " + previous["error"])
     if row.get("prior_creative_steps"):
         lines.extend(["## Reused creative steps", *steps_text(row["prior_creative_steps"], [])])
+    if row.get("recovery"):
+        repair = row["recovery"]
+        lines.append(f"The agent's original state was {repair['agent_state']}. Qwen then made a separate "
+                     f"decision from its verified slates using seed {repair['decision_seed']}.")
     lines.extend([f"## Agent run (seed {row.get('seed', '?')})",
                   *steps_text(row.get("steps", []), row.get("tool_calls", []))])
     lines.append("## Nominations and choice")
