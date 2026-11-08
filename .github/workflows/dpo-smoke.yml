@@ -1,0 +1,66 @@
+name: 27B DPO smoke test
+on:
+  workflow_dispatch:
+    inputs:
+      test_id:
+        description: Suffix of the CHUCKLES_DPO_ repository secret containing the private test request
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      LLAMA_REV: 7d7f0287530bc8981690f361d8c1627dbae1c99a
+      HF_REV: ab8d7bd81d03117501e4da60cccdff4c80f0eea0
+      MODEL_NAME: 0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare ephemeral CPU runner
+        run: |
+          mkdir -p "$RUNNER_TEMP/dpo/assets" "$RUNNER_TEMP/dpo/result"
+          if [ "$(df --output=avail -B1 "$RUNNER_TEMP" | tail -1)" -lt 26000000000 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          fi
+          df -h "$RUNNER_TEMP"
+          free -h
+      - name: Build pinned native GGUF runtime
+        run: |
+          cd "$RUNNER_TEMP/dpo"
+          mkdir llama
+          curl -fsSL --retry 4 "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/$LLAMA_REV" | tar xz -C llama --strip-components=1
+          cmake -S llama -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_CCACHE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
+          cmake --build build -j 4 --target llama > build.log 2>&1 || { tail -80 build.log; exit 1; }
+          c++ -std=c++17 -O2 "$GITHUB_WORKSPACE/training/gguf_dpo/forward.cpp" -I llama/include -I llama/ggml/include -L build/bin -Wl,-rpath,"$PWD/build/bin" -lllama -o forward
+          pip install --disable-pip-version-check --quiet ./llama/gguf-py 'tokenizers>=0.21,<0.24' 'jinja2>=3,<4' 'cryptography>=43'
+          pip install --disable-pip-version-check --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.8.0
+      - name: Fetch and verify the original GGUF and tokenizer
+        run: |
+          cd "$RUNNER_TEMP/dpo"
+          root="https://huggingface.co/$MODEL_NAME/resolve/$HF_REV"
+          curl -fsSL --retry 4 "$root/RVN-Q4_K_M-multilingual.gguf" -o model.gguf
+          echo '9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61  model.gguf' | sha256sum -c -
+          curl -fsSL --retry 4 "$root/GSQ-3bit/tokenizer.json" -o assets/tokenizer.json
+          curl -fsSL --retry 4 "$root/chat_template.jinja" -o assets/chat_template.jinja
+      - name: Train, reload and compare on identical prompts
+        env:
+          PRIVATE_REQUEST: ${{ secrets[format('CHUCKLES_DPO_{0}', inputs.test_id)] }}
+        run: |
+          cd "$RUNNER_TEMP/dpo"
+          umask 077
+          python -c 'import os,pathlib; pathlib.Path("request.json").write_text(os.environ["PRIVATE_REQUEST"])'
+          unset PRIVATE_REQUEST
+          python "$GITHUB_WORKSPACE/training/gguf_dpo/smoke.py" --input request.json --driver "$PWD/forward" --model model.gguf --work scratch --assets assets --output result
+          python "$GITHUB_WORKSPACE/training/gguf_dpo/seal.py" request.json result "$RUNNER_TEMP/comparison.bin"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sealed-dpo-test
+          path: ${{ runner.temp }}/comparison.bin
+          if-no-files-found: error
+          retention-days: 7
