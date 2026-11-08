@@ -257,6 +257,31 @@ python pipeline/run_pipeline.py --down <pod-id>
 `pipeline/generate_with_reasoning.py` can also run anywhere with a GPU to
 try the adapter on any titles CSV.
 
+### Test the Qwen3.8 27B GGUF on RunPod
+
+Select **gguf-test** in the Reasoning SFT Pipeline's **mode** menu, or run the
+command below from the repo with `RUNPOD_API_KEY` set. It rents one GPU for
+inference with the pinned
+[`RVN-Q4_K_M-multilingual.gguf`](https://huggingface.co/0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF)
+weights, verifies the download, and terminates the pod after generation.
+
+```bash
+pip install -e . 'setuptools<81'
+python pipeline/run_gguf_test.py --limit 10 --output-dir out/gguf-01
+```
+
+The default sample uses the first ten titles in `pipeline/movie_titles_1995_1999.csv`.
+Pass `--titles` to supply another CSV with a `title` column. Use a new output
+directory for each run. The default time limit is 25 minutes.
+
+`results.jsonl` includes the parody, model-emitted reasoning, supplied
+suggestions, raw assistant message and independently computed phonetic scores
+for each title. The scoring tool aligns words by position, so inspect titles
+that gain or lose words. Numbers written by the model in its trace can differ
+from the scores in `swap_scores`. The run configuration and pod teardown
+status are in `run.json`. GitHub Actions collects both files in the
+`chuckles-gguf-test` artifact.
+
 ## Project Structure
 
 ```

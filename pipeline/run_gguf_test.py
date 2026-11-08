@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Run the Qwen3.8 27B GGUF on one ephemeral RunPod GPU and save Chuckles results."""
+
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import secrets
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+import requests
+
+PIPELINE = Path(__file__).resolve().parent
+MODEL = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF"
+REVISION = "ab8d7bd81d03117501e4da60cccdff4c80f0eea0"
+FILENAME = "RVN-Q4_K_M-multilingual.gguf"
+SHA256 = "9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61"
+# llama.cpp b12182, CUDA 12.8, linux/amd64.
+IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:859efa314dc34f1843a38ff28a4818aeac51a4cce125bdea4d2678aceba95469"
+PODS = "https://rest.runpod.io/v1/pods"
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def pod_config(name, server_key, gpu, cloud):
+    url = f"https://huggingface.co/{MODEL}/resolve/{REVISION}/{FILENAME}"
+    boot = (
+        f"set -eu; curl -fL --retry 3 -o /tmp/model.gguf '{url}'; "
+        f"echo '{SHA256}  /tmp/model.gguf' | sha256sum -c -; "
+        f"exec /app/llama-server -m /tmp/model.gguf --alias {MODEL} "
+        "--host 0.0.0.0 --port 8080 --jinja --reasoning-format deepseek "
+        "--reasoning-budget 768 -ngl 99 -c 4096 -np 1"
+    )
+    return {
+        "name": name, "imageName": IMAGE, "cloudType": cloud,
+        "gpuTypeIds": [g.strip() for g in gpu.split(",")], "gpuTypePriority": "custom", "gpuCount": 1,
+        "containerDiskInGb": 32, "volumeInGb": 0, "ports": ["8080/http"],
+        "dockerEntrypoint": ["/bin/sh", "-c"], "dockerStartCmd": [boot],
+        "env": {"LLAMA_API_KEY": server_key},
+    }
+
+
+def terminate(api, pod_id):
+    """A repeated delete or a 404 both mean teardown is complete."""
+    url = f"{PODS}/{pod_id}"
+    for attempt in range(5):
+        try:
+            res = api.delete(url, timeout=20)
+            if res.status_code == 404:
+                return
+            res.raise_for_status()
+            time.sleep(2)
+            state = api.get(url, timeout=20)
+            if state.status_code == 404 or (
+                state.ok and state.json().get("desiredStatus") == "TERMINATED"
+            ):
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(2 + attempt)
+    raise RuntimeError(f"Could not confirm termination of RunPod pod {pod_id}")
+
+
+def wait_ready(api, pod_id, endpoint, headers, deadline):
+    last_status = None
+    while time.monotonic() < deadline:
+        info = api.get(f"{PODS}/{pod_id}", params={"includeMachine": "true"}, timeout=20)
+        if info.ok and info.json().get("desiredStatus") in ("EXITED", "TERMINATED", "STOPPED"):
+            raise RuntimeError(f"Pod exited during startup: {info.json()['desiredStatus']}")
+        try:
+            r = requests.get(endpoint + "/v1/models", headers=headers, timeout=10)
+            if r.ok and MODEL in [m["id"] for m in r.json()["data"]]:
+                return info.json() if info.ok else {}
+            status = r.status_code
+        except requests.RequestException:
+            status = "unreachable"
+        if status != last_status:
+            print(f"Waiting for model on {pod_id} (proxy {status})", flush=True)
+            last_status = status
+        time.sleep(10)
+    raise TimeoutError("The GGUF server did not become ready in time")
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--titles", type=Path, default=PIPELINE / "movie_titles_1995_1999.csv")
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--output-dir", type=Path, required=True, help="New directory for this run")
+    p.add_argument("--gpu", default="NVIDIA GeForce RTX 4090,NVIDIA GeForce RTX 3090,NVIDIA RTX A6000,NVIDIA A40",
+                   help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
+    p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="COMMUNITY")
+    p.add_argument("--timeout-mins", type=int, default=25)
+    args = p.parse_args()
+    if args.limit < 1 or args.timeout_mins < 1 or not args.titles.is_file():
+        p.error("Use an existing titles CSV, a positive limit and a positive timeout")
+    if not os.getenv("RUNPOD_API_KEY"):
+        p.error("RUNPOD_API_KEY is required")
+    args.output_dir.mkdir(parents=True, exist_ok=False)
+    api = requests.Session()
+    api.headers["Authorization"] = "Bearer " + os.environ["RUNPOD_API_KEY"]
+    server_key = secrets.token_urlsafe(32)
+    name = "chuckles-gguf-" + uuid.uuid4().hex[:12]
+    meta = {
+        "pod_name": name, "model": MODEL, "revision": REVISION, "file": FILENAME,
+        "sha256": SHA256, "image": IMAGE, "gpu_requested": args.gpu, "cloud": args.cloud,
+        "started_at": utc_now(), "titles_file": args.titles.name, "limit": args.limit,
+        "temperature": 0.4, "seed": 42, "reasoning_budget": 768, "context": 4096,
+    }
+    manifest = args.output_dir / "run.json"
+    def save():
+        manifest.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt(f"Run interrupted by signal {signum}")
+    signal.signal(signal.SIGTERM, interrupted)
+    start = time.monotonic()
+    deadline = start + args.timeout_mins * 60
+    pod_id = None
+    save()
+    try:
+        response = api.post(PODS, json=pod_config(name, server_key, args.gpu, args.cloud), timeout=75)
+        if not response.ok:
+            # API errors can echo the request, which contains the temporary server credential.
+            raise RuntimeError(f"RunPod creation returned {response.status_code}: "
+                               + response.text.replace(server_key, "[redacted]")[:500])
+        pod = response.json()
+        pod_id = pod["id"]
+        meta.update(pod_id=pod_id, cost_per_hour=pod.get("costPerHr"))
+        save()
+        print(f"Created pod {pod_id} at ${meta['cost_per_hour']}/hr", flush=True)
+        endpoint = f"https://{pod_id}-8080.proxy.runpod.net"
+        info = wait_ready(api, pod_id, endpoint, {"Authorization": "Bearer " + server_key}, deadline)
+        meta.update(ready_at=utc_now(), gpu=(info.get("machine") or {}).get("gpuTypeId"))
+        save()
+        env = {**os.environ, "LLAMA_API_KEY": server_key}
+        del env["RUNPOD_API_KEY"]
+        subprocess.run([
+            sys.executable, str(PIPELINE / "generate_with_reasoning.py"),
+            "--llama-server", endpoint, "--no-adapter", "--base-model", MODEL,
+            "--titles", str(args.titles), "--limit", str(args.limit), "--max-new-tokens", "1280",
+            "--output", str(args.output_dir / "results.jsonl"),
+        ], check=True, env=env, timeout=max(1, deadline - time.monotonic()))
+        meta["generation_status"] = "complete"
+    finally:
+        # A lost creation response can still allocate a pod. Reconcile only this unique name.
+        if not pod_id:
+            listed = api.get(PODS, timeout=30)
+            listed.raise_for_status()
+            pod_id = next((d["id"] for d in listed.json() if d.get("name") == name), None)
+        if pod_id:
+            meta["pod_id"] = pod_id
+            save()
+            terminate(api, pod_id)
+            meta["termination_confirmed"] = True
+            print(f"Confirmed teardown of {pod_id}", flush=True)
+        meta["ended_at"] = utc_now()
+        meta["elapsed_seconds"] = round(time.monotonic() - start, 2)
+        if meta.get("cost_per_hour") is not None:
+            meta["estimated_compute_usd"] = round(float(meta["cost_per_hour"]) * meta["elapsed_seconds"] / 3600, 4)
+        save()
+
+
+if __name__ == "__main__":
+    main()

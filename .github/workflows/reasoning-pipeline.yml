@@ -4,6 +4,7 @@ name: Reasoning SFT Pipeline
 # patruff/parody-suggestions + patruff/word-phone HF tools), then rents a
 # RunPod GPU that trains the LoRA adapter and pushes it to the HF Hub.
 # The pod is always terminated when the run finishes or times out.
+# gguf-test runs the quantized 27B base model for inference on its own pod.
 #
 # Secrets used: RUNPOD_API_KEY, and HUGGINGFACE_API_KEY (or HF_TOKEN) with
 # write scope. CEREBRAS_API_KEY is NOT used by this pipeline.
@@ -11,6 +12,11 @@ name: Reasoning SFT Pipeline
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Train the reasoning adapter or run inference with the 27B Qwen GGUF"
+        type: choice
+        options: [train, gguf-test]
+        default: train
       test_mode:
         description: "Cheap validation run (Qwen3-0.6B, 20 steps) — try this first"
         type: boolean
@@ -25,7 +31,7 @@ on:
         description: "Cap training steps (0 = full epochs). ~120 on a 1.7B model is a quick 15-min run"
         default: "0"
       infer_limit:
-        description: "Max titles to generate (empty = all 50; test mode = 3)"
+        description: "Max titles (defaults: 50 for training, 3 for test training, 10 for GGUF)"
         default: ""
       source_dataset:
         description: "HF dataset with human (title, parody) pairs"
@@ -60,6 +66,7 @@ concurrency:
 
 jobs:
   pipeline:
+    if: ${{ inputs.mode != 'gguf-test' }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
@@ -111,3 +118,33 @@ jobs:
       - name: Cleanup pods (always)
         if: always()
         run: python pipeline/run_pipeline.py --sweep
+
+  gguf-test:
+    if: ${{ inputs.mode == 'gguf-test' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY || secrets.HF_TOKEN }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e . 'setuptools<81'
+      - name: Generate parodies and traces
+        env:
+          TITLE_LIMIT: ${{ inputs.infer_limit }}
+          TIMEOUT_MINS: ${{ inputs.timeout_mins }}
+          GPU_TYPES: ${{ inputs.gpu_type }}
+        run: |
+          if [ "${TIMEOUT_MINS:-0}" = "0" ]; then TIMEOUT_MINS=25; fi
+          python pipeline/run_gguf_test.py --limit "${TITLE_LIMIT:-10}" \
+            --gpu "$GPU_TYPES" --timeout-mins "$TIMEOUT_MINS" --output-dir out/gguf-test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chuckles-gguf-test
+          path: out/gguf-test

@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "smolagents>=1.24.0",
     "openai>=1.0.0",
+    "requests>=2.28",
     "rich",
     "pronouncing",
     "datasets>=3.0.0",

@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -52,6 +53,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--no-adapter", action="store_true")
     p.add_argument(
+        "--llama-server", help="URL of a llama.cpp server hosting --base-model. "
+        "Uses LLAMA_API_KEY when set and requires --no-adapter.",
+    )
+    p.add_argument(
         "--base-model",
         default="",
         help="Base model id. Default: read from the adapter's config; "
@@ -72,7 +77,10 @@ def parse_args() -> argparse.Namespace:
         "--funny-words",
         default=str(Path(__file__).resolve().parent / "funny_words.json"),
     )
-    return p.parse_args()
+    args = p.parse_args()
+    if args.llama_server and not (args.no_adapter and args.base_model):
+        p.error("--llama-server requires --no-adapter and --base-model")
+    return args
 
 
 def read_titles(csv_path: str) -> list[str]:
@@ -150,6 +158,43 @@ def generate_one(
     return tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
 
+def generate_gguf(args, title, suggestions):
+    import requests
+
+    headers = {}
+    if key := os.getenv("LLAMA_API_KEY"):
+        headers["Authorization"] = "Bearer " + key
+    response = requests.post(
+        args.llama_server.rstrip("/") + "/v1/chat/completions",
+        headers=headers,
+        json={
+            "model": args.base_model,
+            "messages": [
+                {"role": "system", "content": REASONING_SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_prompt(title, suggestions)},
+            ],
+            "chat_template_kwargs": {"enable_thinking": True},
+            "temperature": args.temperature, "top_p": 0.9, "seed": 42,
+            "max_tokens": args.max_new_tokens,
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    data = response.json()
+    choice = data["choices"][0]
+    message = choice["message"]
+    reasoning, answer = split_think_answer(message.get("content") or "")
+    reasoning = (message.get("reasoning_content") or reasoning).strip()
+    extra = {
+        "model": data["model"], "finish_reason": choice["finish_reason"],
+        "usage": data.get("usage"), "timings": data.get("timings"),
+        "raw_message": message, "suggestions": suggestions,
+    }
+    if choice["finish_reason"] != "stop" or not reasoning or not answer.strip():
+        extra["error"] = "Incomplete generation (check the finish reason, trace and answer)"
+    return reasoning, answer, extra
+
+
 def main() -> None:
     args = parse_args()
 
@@ -162,23 +207,36 @@ def main() -> None:
     if args.limit > 0:
         titles = titles[: args.limit]
     print(f"Generating parodies for {len(titles)} titles")
+    if not titles:
+        raise SystemExit("Titles CSV has no usable titles")
 
     print("Loading HF tools (patruff/parody-suggestions, patruff/word-phone) ...")
     parody_tool, phone_tool = load_parody_tools()
 
-    print(f"Loading model ({'base only' if args.no_adapter else args.adapter}) ...")
-    model, tokenizer = load_model(args)
+    if not args.llama_server:
+        print(f"Loading model ({'base only' if args.no_adapter else args.adapter}) ...")
+        model, tokenizer = load_model(args)
 
     results: list[dict] = []
+    out_path = Path(args.output) if args.output else None
+    if out_path:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
     for i, title in enumerate(titles):
         try:
             raw_sugg = pre_compute_suggestions(title, funny_words, parody_tool)
             suggestions = compact_suggestions(raw_sugg)
-            generated = generate_one(
-                model, tokenizer, title, suggestions,
-                args.max_new_tokens, args.temperature,
-            )
-            reasoning, parody = split_think_answer(generated)
+            extra = {}
+            if args.llama_server:
+                reasoning, parody, extra = generate_gguf(args, title, suggestions)
+                tool_errors = {w: s["error"] for w, s in raw_sugg.items() if s.get("error")}
+                if tool_errors:
+                    extra["suggestion_errors"] = tool_errors
+            else:
+                generated = generate_one(
+                    model, tokenizer, title, suggestions,
+                    args.max_new_tokens, args.temperature,
+                )
+                reasoning, parody = split_think_answer(generated)
             # The answer should be a single title line
             parody = parody.strip().splitlines()[0].strip() if parody.strip() else ""
             swap_scores, avg = score_parody(phone_tool, title, parody)
@@ -191,6 +249,7 @@ def main() -> None:
                     "avg_phonetic_score": round(avg, 3),
                     "passes_threshold": ok,
                     "reasoning": reasoning,
+                    **extra,
                 }
             )
             print(
@@ -200,6 +259,9 @@ def main() -> None:
         except Exception as e:
             results.append({"input_title": title, "error": str(e)})
             print(f"[{i + 1}/{len(titles)}] {title!r} ERROR: {e}")
+        if out_path:
+            with out_path.open("a" if i else "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(results[-1], ensure_ascii=False) + "\n")
 
     scored = [r for r in results if "avg_phonetic_score" in r]
     if scored:
@@ -211,13 +273,10 @@ def main() -> None:
             f"{passing} pass the {MIN_PHONETIC_SCORE} threshold"
         )
 
-    if args.output:
-        out_path = Path(args.output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f:
-            for r in results:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    if out_path:
         print(f"Wrote {out_path}")
+    if args.llama_server and any("error" in r for r in results):
+        raise SystemExit("One or more GGUF completions failed")
 
 
 if __name__ == "__main__":
