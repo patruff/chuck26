@@ -121,3 +121,16 @@ def test_qwen_recovery_selects_only_a_verified_eligible_suggestion():
         == []
     )
     assert len(checked_options(no_pass)[0]) == 4
+
+
+def test_transport_error_checkpoint_redacts_ephemeral_endpoint_and_key(
+    tmp_path, monkeypatch
+):
+    key = "temporary-server-key-for-test"
+    monkeypatch.setenv("LLAMA_API_KEY", key)
+    path = tmp_path / "error.json.gz"
+    batch.atomic_gzip(
+        path, {"error": "source xyz-8080.proxy.runpod.net and " + key, "score": 0.665}
+    )
+    saved = batch.read_gzip(path)
+    assert saved == {"error": "source [RunPod endpoint] and [redacted]", "score": 0.665}

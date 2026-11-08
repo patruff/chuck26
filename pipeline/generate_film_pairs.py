@@ -7,7 +7,9 @@ import gzip
 import hashlib
 import json
 import multiprocessing
+import os
 from pathlib import Path
+import re
 import tempfile
 
 from generate_march import generate_title, load_word_bank, make_model, RUNNING_MAN_TOOLS
@@ -17,12 +19,20 @@ from film_selection import checked_options, finish_sample
 
 
 def atomic_gzip(path, data):
+    payload = json.dumps(data, ensure_ascii=False)
+    # HTTP exceptions can echo a temporary authenticated service endpoint.
+    payload = re.sub(
+        r"(?:https?://)?[\w.-]+\.proxy\.runpod\.net", "[RunPod endpoint]", payload
+    )
+    key = os.getenv("LLAMA_API_KEY", "")
+    if len(key) >= 16:
+        payload = payload.replace(key, "[redacted]")
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as tmp:
         temp = Path(tmp.name)
         try:
             tmp.write(
                 gzip.compress(
-                    json.dumps(data, ensure_ascii=False).encode(),
+                    payload.encode(),
                     compresslevel=5,
                     mtime=0,
                 )
@@ -136,8 +146,8 @@ def generate_side(job):
             print(f"Saved {rank:03}-{side}: {row['parody']}", flush=True)
             return True
         history = [*history, row]
-    if finish_checked(history, seed + 2):
-        return True
+        if finish_checked(history, seed + attempt + 2):
+            return True
     print(f"Unresolved {rank:03}-{side}: {row.get('error')}", flush=True)
     return False
 
