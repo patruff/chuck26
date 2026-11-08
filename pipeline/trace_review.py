@@ -37,6 +37,8 @@ def steps_text(steps, calls):
             lines.append("No reasoning text was returned for this step.")
         if step.get("code"):
             lines.extend(["Python action", block(step["code"], "python")])
+        if step.get("kind") == "verified-slate decision":
+            lines.extend(["Qwen decision using the previously observed scores", block(step["model_output"])])
         for c in calls:
             if c.get("step") == number:
                 lines.append(f"Executed `word_phone_tool(word={c['word']!r}, compare_to={c['compare_to']!r})`")

@@ -407,6 +407,11 @@ Use the thinking channel for brainstorming. Keep executable actions in the CodeA
     if result.state != "success" or not any(step["final"] for step in steps):
         raise RuntimeError(f"CodeAgent did not reach a checked final_answer ({result.state})")
     answer = recorded_answer(result.output)
+    store_checked_answer(record, title, answer, final_evidence, reference_prompt, humor_first, suggester is not None)
+
+
+def store_checked_answer(record, title, answer, final_evidence, reference_prompt, humor_first, dual_scores):
+    """Attach only recorded verifier receipts to the model's selected pair."""
     finalists = (answer["winner"], answer["runner_up"])
     attempts = []
     for a in answer["attempts"]:
@@ -418,7 +423,7 @@ Use the thinking channel for brainstorming. Keep executable actions in the CodeA
                   attempts=attempts)
     if reference_prompt:
         fields = ("word", "compare_to", "score", "step")
-        if humor_first and suggester is not None:
+        if humor_first and dual_scores:
             fields += ("suggestion_score", "word_phone_score", "score_basis")
         record["finalist_checks"] = {
             t: [{k: final_evidence[(clean_word(o), clean_word(r))][k] for k in fields}

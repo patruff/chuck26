@@ -36,3 +36,88 @@ def test_resume_keeps_successful_samples_and_retries_only_the_missing_side(
     assert original == (tmp_path / "001-a.json.gz").read_bytes()
     assert len(batch.read_gzip(tmp_path / "001-b.json.gz")["failed_attempts"]) == 2
     assert [v.args[1] for v in generate.call_args_list] == [1042, 1542, 1543, 1544]
+
+
+def test_qwen_recovery_selects_only_a_verified_eligible_suggestion():
+    from types import SimpleNamespace
+    from film_selection import checked_options, finish_sample
+
+    def draft(title):
+        return {"title": title, "why": "a different joke", "humor": 8}
+
+    def receipt(word, replacement, score):
+        return {
+            "word": word,
+            "compare_to": replacement,
+            "score": score,
+            "suggestion_score": score,
+            "word_phone_score": 1.0,
+            "score_basis": "parody-suggestions",
+            "step": 2,
+            "visible_in_observation": True,
+        }
+
+    row = {
+        "input_title": "Park",
+        "seed": 10042,
+        "state": "max_steps_error",
+        "error": "agent exhausted",
+        "steps": [{"step": 1, "reasoning": "Three pitches."}],
+        "suggestion_tool_results": {"park": {"suggestions": [{"word": "pork"}]}},
+        "draft_rounds": [
+            {
+                "round": 1,
+                "finalists": ["Pork", "Lark"],
+                "attempts": list(map(draft, ["Pork", "Lark", "Dark"])),
+            },
+            {
+                "round": 2,
+                "finalists": ["Mark", "Arc"],
+                "attempts": list(map(draft, ["Mark", "Arc", "Bark"])),
+            },
+        ],
+        "tool_calls": [
+            receipt("park", w, s)
+            for w, s in [("pork", 0.60), ("lark", 0.82), ("mark", 0.3), ("arc", None)]
+        ],
+    }
+    opts, _ = checked_options(row)
+    assert [o["winner"] for o in opts] == ["Pork"]
+    model = Mock()
+    model.generate.return_value = SimpleNamespace(
+        content='{"choice":0,"explanation":"The stronger joke."}',
+        raw=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        reasoning_content="Compare the checked pitches."
+                    ),
+                )
+            ]
+        ),
+    )
+    out = finish_sample(
+        row, model, {"applied_instructions": "creative direction"}, 10044
+    )
+    assert out["qualifying_parody"] == "Pork" and out["runner_up"] == "Lark"
+    assert (
+        out["recovery"]["agent_state"] == "max_steps_error"
+        and out["selected_draft_round"] == 1
+    )
+    assert (
+        out["steps"][-1]["code"] is None
+        and out["steps"][-1]["kind"] == "verified-slate decision"
+    )
+    assert row["state"] == "max_steps_error" and len(row["steps"]) == 1
+    no_pass = {
+        **row,
+        "tool_calls": [
+            {**c, "score": None, "suggestion_score": None} for c in row["tool_calls"]
+        ],
+    }
+    assert (
+        checked_options({**no_pass, "draft_rounds": no_pass["draft_rounds"][:1]})[0]
+        == []
+    )
+    assert len(checked_options(no_pass)[0]) == 4

@@ -13,6 +13,7 @@ import tempfile
 from generate_march import generate_title, load_word_bank, make_model, RUNNING_MAN_TOOLS
 from march_source import BANK_SHA256, NOTEBOOK
 from smolagents import load_tool
+from film_selection import checked_options, finish_sample
 
 
 def atomic_gzip(path, data):
@@ -75,6 +76,46 @@ def generate_side(job):
         history = stored.get("failed_attempts", []) + [stored["row"]]
     # Separate seed ranges keep retries on one side independent of the other.
     seed = 42 + rank * 1000 + (500 if side == "b" else 0) + len(history)
+
+    def finish_checked(records, decision_seed):
+        viable = []
+        for record in reversed(records):
+            if not record.get("draft_rounds"):
+                continue
+            options, _ = checked_options(record)
+            if options:
+                viable.append((any(o["passes"] for o in options), record))
+        for _, record in sorted(viable, key=lambda entry: entry[0], reverse=True):
+            try:
+                result = finish_sample(
+                    record, worker["model"], worker["revision"], decision_seed
+                )
+            except Exception as exc:
+                print(
+                    f"Decision call for {rank:03}-{side} failed ({type(exc).__name__})",
+                    flush=True,
+                )
+                continue
+            if result:
+                atomic_gzip(
+                    path,
+                    {
+                        "film": film,
+                        "side": side,
+                        "signature": signature,
+                        "row": result,
+                        "failed_attempts": records,
+                    },
+                )
+                print(
+                    f"Finished {rank:03}-{side} from Qwen's verified slate: {result['parody']}",
+                    flush=True,
+                )
+                return True
+        return False
+
+    if history and finish_checked(history, seed):
+        return True
     for attempt in range(2):
         row = generate_title(
             film["title"],
@@ -95,6 +136,8 @@ def generate_side(job):
             print(f"Saved {rank:03}-{side}: {row['parody']}", flush=True)
             return True
         history = [*history, row]
+    if finish_checked(history, seed + 2):
+        return True
     print(f"Unresolved {rank:03}-{side}: {row.get('error')}", flush=True)
     return False
 

@@ -193,9 +193,15 @@ def load_source(path):
                 samples = {location(a): left, location(b): right}
                 for side in pair["sides"]:
                     sample = samples[side["source"]]
-                    if sample.get("failed_attempts"):
+                    continued = sample["row"].get("recovery", {}).get("continued_seed")
+                    earlier = [
+                        r
+                        for r in sample.get("failed_attempts", [])
+                        if r.get("seed") != continued
+                    ]
+                    if earlier:
                         side["trace"] = transcript(
-                            {**sample["row"], "prior_runs": sample["failed_attempts"]}
+                            {**sample["row"], "prior_runs": earlier}
                         )
                 yield pair
     else:
