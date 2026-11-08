@@ -4,3 +4,5 @@
 .word-source{display:block;font:10px/1.35 var(--mono);color:#626858}
 
 .trace-meta{font:12px/1.4 var(--mono);color:#565a4e}h1,.option h2{overflow-wrap:anywhere}
+
+.thinking-step{margin:1em 0}.thinking-step h3{font-size:1rem;margin:0}.thinking-step small{color:#565a4e}.thinking-step p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5;margin:.4em 0}.full-transcript{margin:1em 0}

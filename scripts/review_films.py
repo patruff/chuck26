@@ -18,10 +18,12 @@ from flask import Flask, abort, redirect, render_template, request, send_file, u
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pipeline"))
 from trace_review import transcript
+from blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs
 
 DEFAULT_SOURCES = [
     ROOT / "results" / "movielens-200" / "samples",
     ROOT / "results" / "feedback-0c3cc72" / "results.jsonl.gz",
+    ROOT / "reviews" / BLIND_COLLECTION,
 ]
 PROMPT = (
     "Write one funny, recognizable parody of the movie title for an adult audience. Prefer a returned "
@@ -156,6 +158,11 @@ def review_pair(film, first, second, collection):
 
 def load_source(path):
     path = path.resolve()
+    if path.is_dir() and (
+        path.name == BLIND_COLLECTION or any(path.glob("*.blind.json.gz"))
+    ):
+        yield from load_blind_pairs(path, PROMPT, location)
+        return
     if path.is_dir() and (path / "samples").is_dir():
         path = path / "samples"
     if path.is_dir() and not list(path.glob("*-a.json.gz")):
@@ -310,7 +317,11 @@ class ReviewStore:
     def project(self, records):
         out = []
         for r in records.values():
-            if r["choice"] == "neither":
+            if r["choice"] in ("neither", "tie") or (
+                r.get("blind")
+                and normalized(r["sides"][0]["title"])
+                == normalized(r["sides"][1]["title"])
+            ):
                 continue
             i = 0 if r["choice"] == "a" else 1
             chosen, rejected = r["sides"][i], r["sides"][1 - i]
@@ -351,7 +362,11 @@ class ReviewStore:
                 if choice == "clear":
                     records.pop(pair["id"], None)
                     continue
-                if choice not in ("a", "b", "neither"):
+                if choice not in (
+                    ("a", "b", "tie", "neither")
+                    if pair.get("blind")
+                    else ("a", "b", "neither")
+                ):
                     raise ValueError("Select a preference.")
                 sides = [
                     {
@@ -379,6 +394,10 @@ class ReviewStore:
                     "feedback": feedback,
                     "updated": datetime.now(timezone.utc).isoformat(),
                 }
+                if pair.get("blind"):
+                    records[pair["id"]].update(
+                        blind=True, first_choice=current.get("first_choice", choice)
+                    )
             write_lines(self.pending, records.values())
             self.finish_update()
 
@@ -418,8 +437,12 @@ def create_app(items, review_dir, refresh=None):
         else:
             pos = next((i for i, p in enumerate(group) if p["id"] not in records), 0)
         p = group[pos]
+        reveal = p.get("blind", False) and request.args.get("reveal") == "1"
+        if reveal and p["id"] not in records:
+            abort(403, "Save a preference for this film before revealing the models.")
         return render_template(
             "film_review.html",
+            reveal=reveal,
             pair=p,
             pos=pos,
             group=group,
@@ -453,6 +476,10 @@ def create_app(items, review_dir, refresh=None):
             abort(409, str(e))
         except ValueError as e:
             abort(400, str(e))
+        if p.get("blind"):
+            return redirect(
+                url_for("index", set=p["collection"], pair=p["id"], notice="Saved"), 303
+            )
         records = store.read()
         group = collections[p["collection"]]
         pos = group.index(p)
@@ -501,9 +528,11 @@ def create_app(items, review_dir, refresh=None):
                     (s["sha256"], s["title"]) for s in p["sides"]
                 ]:
                     raise ValueError("Trace mismatch")
-                if rec["choice"] not in ("a", "b", "neither") or not isinstance(
-                    rec["feedback"], str
-                ):
+                if rec["choice"] not in (
+                    ("a", "b", "tie", "neither")
+                    if p.get("blind")
+                    else ("a", "b", "neither")
+                ) or not isinstance(rec["feedback"], str):
                     raise ValueError("Invalid vote")
                 prior = records.get(key)
                 if prior:

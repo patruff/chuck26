@@ -17,6 +17,8 @@ python scripts/review_films.py
 
 Open **http://127.0.0.1:5118**. Select the recent feedback run or the ranked film collection. Each movie shows two distinct parodies, pitches, changed-word scores and whether each swap came from the 2025 suggestions. Expand a trace to see Qwen’s thinking, executed Python and actual tool returns. The recent run compares two finalists from the same trajectory. The 200-film batch samples separate trajectories with different seeds. If both trajectories pick the same title, the app uses a distinct verified finalist from one of them and retains the original trace.
 
+The **Blind 27B comparison** collection loads local paired samples from `reviews/blind-27b-15/`. Each card shows one actual model selection, including when the two titles match. Expand **Reasoning and tool calls** to see the returned thinking and the chronological transcript before voting. Save **Prefer A**, **Prefer B**, **Equally funny**, or **Neither works**, then optionally reveal the identities for that film. Ties, neither votes and identical-title comparisons stay in the preference backup and generate no DPO row.
+
 Choose **Prefer A**, **Prefer B**, or **Neither works**, add an optional comment and save. The app moves to the next unreviewed movie. Jump back to change or clear a vote. Your selections are saved locally after each review.
 
 | File | What it contains |

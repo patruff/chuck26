@@ -159,3 +159,143 @@ def test_changed_catalog_rejects_a_vote_from_an_old_tab(tmp_path):
     )
     assert response.status_code == 409
     assert (tmp_path / "reviewed_dpo.jsonl").read_bytes() == b""
+
+
+def test_blind_votes_gate_identity_and_keep_ties_out_of_dpo(tmp_path):
+    pairs = list(load_source(RECENT))[:2]
+    for pair in pairs:
+        pair.update(blind=True, collection="blind-27b-15", shared_trace=False)
+        pair["sides"][0]["model"] = "Hidden original identity"
+        pair["sides"][1]["model"] = "Hidden adapter identity"
+    pair = pairs[0]
+    app = create_app(pairs, tmp_path)
+    client = app.test_client()
+    url = f"/?set=blind-27b-15&pair={pair['id']}"
+    before = client.get(url).get_data(as_text=True)
+    assert "Reasoning and tool calls" in before and "Equally funny" in before
+    assert (
+        "Hidden original identity" not in before
+        and "Hidden adapter identity" not in before
+    )
+    assert client.get(url + "&reveal=1").status_code == 403
+    page = client.post(
+        "/vote/" + pair["id"],
+        data={"choice": "tie", "feedback": "Same joke", "expected": ""},
+        follow_redirects=True,
+    ).get_data(as_text=True)
+    assert (
+        "Reveal models for this film" in page and "Hidden adapter identity" not in page
+    )
+    revealed = client.get(url + "&reveal=1").get_data(as_text=True)
+    assert (
+        "Hidden original identity" in revealed and "Hidden adapter identity" in revealed
+    )
+    other = client.get("/?set=blind-27b-15&pair=" + pairs[1]["id"] + "&reveal=1")
+    assert other.status_code == 403
+    assert (tmp_path / "reviewed_dpo.jsonl").read_bytes() == b""
+    decision = json.loads((tmp_path / "film_preferences.jsonl").read_text())
+    assert decision["choice"] == decision["first_choice"] == "tie"
+    pair["sides"][1]["title"] = pair["sides"][0]["title"]
+    client.post(
+        "/vote/" + pair["id"],
+        data={
+            "choice": "a",
+            "feedback": "Better pitch",
+            "expected": decision["updated"],
+        },
+    )
+    assert (tmp_path / "reviewed_dpo.jsonl").read_bytes() == b""
+    decision = json.loads((tmp_path / "film_preferences.jsonl").read_text())
+    assert decision["choice"] == "a" and decision["first_choice"] == "tie"
+
+
+def test_blind_loader_preserves_equal_titles_and_independent_traces(tmp_path):
+    directory = tmp_path / "blind-27b-15"
+    directory.mkdir()
+    film = {
+        "rank": "42",
+        "year": "2000",
+        "movielens_id": "12",
+        "ratings": "250",
+        "title": "Moon",
+    }
+    check = {
+        "word": "moon",
+        "compare_to": "soon",
+        "score": 0.7,
+        "suggestion_score": 0.7,
+        "word_phone_score": 1.0,
+    }
+    draft = {"first": "Soon", "second": "Moon", "idea": "A rushed lunar landing."}
+    options = []
+    for variant, scale, thought in [
+        ("adapter", 1, "I prefer the rushed landing."),
+        ("original", 0, "The rhyme is audible."),
+    ]:
+        row = dict(
+            input_title="Moon",
+            model=variant,
+            seed=4200,
+            word_count=1565,
+            suggestion_cutoff=0.6,
+            suggested_words={"moon": [{"word": "soon", "similarity": 0.7}]},
+            suggestion_tool_results={
+                "moon": {"suggestions": [{"word": "soon", "similarity": 0.7}]}
+            },
+            steps=[
+                dict(
+                    kind="Draft titles",
+                    step=1,
+                    input_messages=[],
+                    reasoning=thought,
+                    model_output=json.dumps(draft),
+                ),
+                dict(
+                    kind="Choose after phonetic checks",
+                    step=2,
+                    input_messages=[],
+                    reasoning="",
+                    model_output='{"winner":"Soon"}',
+                ),
+            ],
+            tool_calls=[check],
+            finalist_checks={"Soon": [check]},
+            parody="Soon",
+            explanation="The character nearly misses the landing.",
+            state="success",
+            tool_revisions={"suggest": "hash"},
+            applied_instructions_sha256="fixture",
+        )
+        options.append(
+            dict(
+                row=row,
+                film=film,
+                variant=variant,
+                adapter_scale=scale,
+                base_sha256="base",
+                adapter_sha256="adapter",
+                model_revision="rev",
+                bank_sha256="bank",
+            )
+        )
+    path = directory / "042.blind.json.gz"
+
+    def save():
+        with gzip.open(path, "wt") as f:
+            json.dump({"options": options, "assignment_id": "fixture-id"}, f)
+
+    save()
+    (pair,) = load_source(directory)
+    assert [s["title"] for s in pair["sides"]] == ["Soon", "Soon"]
+    assert not pair["shared_trace"]
+    trace = pair["sides"][0]["trace"]
+    assert (
+        trace.index("I prefer the rushed landing.")
+        < trace.index("word_phone_tool(")
+        < trace.index("Choose after phonetic checks")
+    )
+    assert pair["sides"][0]["thinking_entries"][0]["native"]
+    options[1]["row"]["suggested_words"] = {}
+    save()
+    with pytest.raises(ValueError, match="suggested_words"):
+        list(load_source(directory))

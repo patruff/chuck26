@@ -12,7 +12,7 @@
     <form action="{{ url_for('index') }}">
       <label for="batch">Collection</label>
       <select id="batch" name="set" onchange="this.form.submit()">
-        {% for name in collections %}<option value="{{name}}" {% if name==collection %}selected{% endif %}>{{ 'Top 200 · 1990–2015' if name=='movielens-200' else ('Recent feedback run' if name=='feedback-0c3cc72' else name) }}</option>{% endfor %}
+        {% for name in collections %}<option value="{{name}}" {% if name==collection %}selected{% endif %}>{{ 'Top 200 · 1990–2015' if name=='movielens-200' else ('Recent feedback run' if name=='feedback-0c3cc72' else ('Blind 27B comparison' if name=='blind-27b-15' else name)) }}</option>{% endfor %}
       </select><noscript><button>Open</button></noscript>
     </form>
     <div class="progress"><span>{{reviewed}} / {{group|length}} reviewed</span><progress value="{{reviewed}}" max="{{group|length}}"></progress></div>
@@ -20,6 +20,7 @@
   <div class="film-header">
     <div class="film-meta">{% if pair.film.movielens_id %}MovieLens rank {{pair.film.rank}}{% else %}Film {{pos+1}} of {{group|length}}{% endif %}{% if pair.film.year %} <span>•</span> {{pair.film.year}}{% endif %}</div>
     <h1>{{pair.film.title}}</h1>
+    {% if pair.blind %}<p>Which parody is funnier? You can read both traces before voting.</p>{% endif %}
     <div class="film-nav">
       {% if pos>0 %}<a aria-label="Previous film" href="{{url_for('index',set=collection,pair=group[pos-1].id)}}">← Previous</a>{% endif %}
       <form action="{{url_for('index')}}" class="jump">
@@ -32,12 +33,17 @@
   <div class="options">
     {% for side in pair.sides %}
     <article class="option">
-      <div class="option-top"><span>Option {{'AB'[loop.index0]}}</span><span class="status {{'hit' if side.passed else 'miss'}}">{{'Clears 0.60' if side.passed else 'Below floor'}}</span></div>
+      <div class="option-top"><span>Option {{'AB'[loop.index0]}}{% if reveal %} · {{side.model}}{% endif %}</span><span class="status {{'hit' if side.passed else 'miss'}}">{{'Clears 0.60' if side.passed else 'Below floor'}}</span></div>
       <h2>{{side.title}}</h2><p class="pitch">{{side.why}}</p>
       <table><caption>Changed words</caption><thead><tr><th>Swap</th><th>March</th><th>Word-phone</th></tr></thead><tbody>
       {% for p in side.pairs if p.word!=p.compare_to %}<tr><td>{{p.word}} → {{p.compare_to}}<small class="word-source">{{"Suggested" if p.compare_to in side.listed.get(p.word,[]) else "Off-list"}}</small></td><td>{{'%.3f'|format(p.suggestion_score) if p.suggestion_score is number else '—'}}</td><td>{{'%.3f'|format(p.word_phone_score) if p.word_phone_score is number else '—'}}</td></tr>{% endfor %}
       </tbody></table>
-      {% if not pair.shared_trace %}<details class="trace"><summary>Reasoning and tool calls</summary><p class="trace-meta">Seed {{side.seed}} · {{ "Model selection" if side.model_choice else "Verified alternative" }}</p><pre>{{side.trace}}</pre></details>{% endif %}
+      {% if not pair.shared_trace %}<details class="trace"><summary>Reasoning and tool calls</summary>
+        {% if pair.blind %}
+          {% for step in side.thinking_entries %}<div class="thinking-step"><h3>{{step.stage}}</h3><small>{{'Returned model thinking' if step.native else 'Model’s stated reasoning'}}</small><p>{{step.text}}</p></div>{% endfor %}
+          <details class="full-transcript"><summary>Full transcript, prompts and tool returns</summary><pre>{{side.trace}}</pre></details>
+        {% else %}<p class="trace-meta">Seed {{side.seed}} · {{ "Model selection" if side.model_choice else "Verified alternative" }}</p><pre>{{side.trace}}</pre>{% endif %}
+      </details>{% endif %}
     </article>
     {% endfor %}
   </div>
@@ -47,13 +53,17 @@
     <form action="{{url_for('vote',pair_id=pair.id)}}" method="post">
       <input type="hidden" name="expected" value="{{decision.get('updated','')}}">
       <fieldset><legend class="sr">Which title works better?</legend>
-        {% for key,title in [('a','Prefer A'),('b','Prefer B'),('neither','Neither works')] %}
+        {% for key,title in [('a','Prefer A'),('b','Prefer B')] + ([('tie','Equally funny')] if pair.blind else []) + [('neither','Neither works')] %}
         <label class="radio"><input required type="radio" name="choice" value="{{key}}" {% if decision.get('choice')==key %}checked{% endif %}><span>{{title}}</span></label>{% endfor %}
       </fieldset>
       <label for="feedback">Your feedback <small>optional</small></label>
       <textarea id="feedback" name="feedback" rows="3" placeholder="What landed or fell flat?">{{decision.get('feedback','')}}</textarea>
-      <div class="actions"><button type="submit" class="primary">Save review →</button></div>
+      <div class="actions"><button type="submit" class="primary">Save review{% if not pair.blind %} →{% endif %}</button></div>
     </form>
+    {% if pair.blind and decision %}<div class="film-nav">
+      {% if not reveal %}<a href="{{url_for('index',set=collection,pair=pair.id,reveal=1)}}">Reveal models for this film</a>{% endif %}
+      {% if reviewed < group|length %}<a href="{{url_for('index',set=collection)}}">Next unreviewed film →</a>{% endif %}
+    </div>{% endif %}
     {% if decision %}<form action="{{url_for('vote',pair_id=pair.id)}}" method="post" class="clear"><input type="hidden" name="choice" value="clear"><input type="hidden" name="expected" value="{{decision.updated}}"><button>Clear this review</button></form>{% endif %}
   </section>
   <details class="manage"><summary>Transfer reviews</summary>

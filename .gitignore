@@ -15,3 +15,5 @@ build/
 
 /reviews/.review.lock
 /reviews/.pending-film-preferences.jsonl
+
+/reviews/blind-27b-15/
