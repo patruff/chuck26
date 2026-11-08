@@ -1,5 +1,6 @@
 """The GGUF smoke run requires both a real trace and a completed answer."""
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,3 +37,31 @@ def test_gguf_completion(monkeypatch, message, finish, complete):
     if complete:
         assert (reasoning, title) == ("Check the vowel.", "Jurassic Pork")
     assert post.call_args.kwargs["json"]["chat_template_kwargs"]["enable_thinking"]
+
+
+def test_march_word_bank_reaches_both_tools(tmp_path):
+    from generate_march import load_word_bank, suggestions_for, verify
+
+    bank = tmp_path / "word_structures.py"
+    bank.write_text('funny_words = ["pork"]\ncustom_phones = {"pork": {"primary_phones": "P AO R K"}}\n'
+                    'raise RuntimeError("historic modules are data only")\n')
+    words, phones = load_word_bank(bank)
+    suggester = Mock()
+    suggester.forward.return_value = '{"suggestions":[{"word":"pork","similarity":0.82}]}'
+    suggestions, _ = suggestions_for("Park!", suggester, json.dumps(words), phones)
+    assert suggestions["park"][0]["similarity"] == 0.82
+    assert suggester.forward.call_args.kwargs["custom_phones"] == phones
+    verifier = Mock()
+    verifier.forward.return_value = '{"similarity":{"similarity":0.60}}'
+    result = verify("Jurassic Park", "Jurassic Pork", verifier, phones)
+    assert result["passes"] and result["swaps"][0]["score"] == 0.60
+    verifier.forward.assert_called_once_with(word="park", compare_to="pork", custom_phones=phones)
+
+
+@pytest.mark.parametrize("candidate", ["Jurassic Park", "Jurassic Pork Chop", "Jurassic Blorp"])
+def test_march_requires_all_swaps_to_be_verifiable(candidate):
+    from generate_march import verify
+
+    analyzer = Mock()
+    analyzer.forward.return_value = '{"found":false}'
+    assert not verify("Jurassic Park", candidate, analyzer, {})["passes"]

@@ -3,6 +3,7 @@
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,18 +30,22 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def pod_config(name, server_key, gpu, cloud):
+def pod_config(name, server_key, gpu, cloud, reasoning_budget, context):
     url = f"https://huggingface.co/{MODEL}/resolve/{REVISION}/{FILENAME}"
     boot = (
-        f"set -eu; curl -fL --retry 3 -o /tmp/model.gguf '{url}'; "
+        "set -eu; /app/llama-server --list-devices > /tmp/devices 2>&1; cat /tmp/devices; "
+        "grep -q 'CUDA0:' /tmp/devices; "
+        f"curl -fL --retry 3 -o /tmp/model.gguf '{url}'; "
         f"echo '{SHA256}  /tmp/model.gguf' | sha256sum -c -; "
         f"exec /app/llama-server -m /tmp/model.gguf --alias {MODEL} "
         "--host 0.0.0.0 --port 8080 --jinja --reasoning-format deepseek "
-        "--reasoning-budget 768 -ngl 99 -c 4096 -np 1"
+        f"--device CUDA0 --reasoning-budget {reasoning_budget} -ngl 99 -c {context} -np 1"
     )
     return {
         "name": name, "imageName": IMAGE, "cloudType": cloud,
         "gpuTypeIds": [g.strip() for g in gpu.split(",")], "gpuTypePriority": "custom", "gpuCount": 1,
+        # REST v1's CUDA enum stops at 13.0. Secure hosts can have newer drivers.
+        **({"allowedCudaVersions": ["12.8", "12.9", "13.0"]} if cloud == "COMMUNITY" else {}),
         "containerDiskInGb": 32, "volumeInGb": 0, "ports": ["8080/http"],
         "dockerEntrypoint": ["/bin/sh", "-c"], "dockerStartCmd": [boot],
         "env": {"LLAMA_API_KEY": server_key},
@@ -93,6 +98,8 @@ def main():
     p.add_argument("--titles", type=Path, default=PIPELINE / "movie_titles_1995_1999.csv")
     p.add_argument("--limit", type=int, default=10)
     p.add_argument("--output-dir", type=Path, required=True, help="New directory for this run")
+    p.add_argument("--march-word-bank", type=Path, metavar="WORD_STRUCTURES.PY",
+                   help="Use the March humor-first draft and selection prompts with this historical word bank")
     p.add_argument("--gpu", default="NVIDIA GeForce RTX 4090,NVIDIA GeForce RTX 3090,NVIDIA RTX A6000,NVIDIA A40",
                    help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="COMMUNITY")
@@ -102,6 +109,9 @@ def main():
         p.error("Use an existing titles CSV, a positive limit and a positive timeout")
     if not os.getenv("RUNPOD_API_KEY"):
         p.error("RUNPOD_API_KEY is required")
+    if args.march_word_bank and not args.march_word_bank.is_file():
+        p.error("--march-word-bank must point to word_structures.py")
+    reasoning_budget, context = (2304, 8192) if args.march_word_bank else (768, 4096)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     api = requests.Session()
     api.headers["Authorization"] = "Bearer " + os.environ["RUNPOD_API_KEY"]
@@ -111,8 +121,11 @@ def main():
         "pod_name": name, "model": MODEL, "revision": REVISION, "file": FILENAME,
         "sha256": SHA256, "image": IMAGE, "gpu_requested": args.gpu, "cloud": args.cloud,
         "started_at": utc_now(), "titles_file": args.titles.name, "limit": args.limit,
-        "temperature": 0.4, "seed": 42, "reasoning_budget": 768, "context": 4096,
+        "temperature": 0.75 if args.march_word_bank else 0.4, "seed": 42,
+        "reasoning_budget": reasoning_budget, "context": context,
     }
+    if args.march_word_bank:
+        meta.update(profile="march", word_bank_sha256=hashlib.sha256(args.march_word_bank.read_bytes()).hexdigest())
     manifest = args.output_dir / "run.json"
     def save():
         manifest.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -125,7 +138,8 @@ def main():
     pod_id = None
     save()
     try:
-        response = api.post(PODS, json=pod_config(name, server_key, args.gpu, args.cloud), timeout=75)
+        config = pod_config(name, server_key, args.gpu, args.cloud, reasoning_budget, context)
+        response = api.post(PODS, json=config, timeout=75)
         if not response.ok:
             # API errors can echo the request, which contains the temporary server credential.
             raise RuntimeError(f"RunPod creation returned {response.status_code}: "
@@ -141,10 +155,13 @@ def main():
         save()
         env = {**os.environ, "LLAMA_API_KEY": server_key}
         del env["RUNPOD_API_KEY"]
+        if args.march_word_bank:
+            generator = [str(PIPELINE / "generate_march.py"), "--word-bank", str(args.march_word_bank)]
+        else:
+            generator = [str(PIPELINE / "generate_with_reasoning.py"), "--no-adapter", "--max-new-tokens", "1280"]
         subprocess.run([
-            sys.executable, str(PIPELINE / "generate_with_reasoning.py"),
-            "--llama-server", endpoint, "--no-adapter", "--base-model", MODEL,
-            "--titles", str(args.titles), "--limit", str(args.limit), "--max-new-tokens", "1280",
+            sys.executable, *generator, "--llama-server", endpoint, "--base-model", MODEL,
+            "--titles", str(args.titles), "--limit", str(args.limit),
             "--output", str(args.output_dir / "results.jsonl"),
         ], check=True, env=env, timeout=max(1, deadline - time.monotonic()))
         meta["generation_status"] = "complete"

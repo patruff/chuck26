@@ -282,6 +282,27 @@ from the scores in `swap_scores`. The run configuration and pod teardown
 status are in `run.json`. GitHub Actions collects both files in the
 `chuckles-gguf-test` artifact.
 
+### Run the March 2025 prompt style
+
+Pass the `word_structures.py` from your `patruff/chuck2025` checkout at
+`783c529`. It supplies the 1,565 historical funny words and their custom
+pronunciations. The controller reads the two data assignments locally.
+
+```bash
+python pipeline/run_gguf_test.py \
+  --march-word-bank ../chuck2025/word_structures.py \
+  --titles titles.csv --limit 5 --output-dir out/gguf-march-01
+```
+
+Qwen drafts three or four rated titles using actual `parody-suggestions`
+results. The controller checks each changed word with `word-phone` and gives
+those results back to Qwen to select a winner and a runner-up. Every swapped
+word must score at least 0.60 for the attempt to pass. A changed word count or
+a missing score makes the attempt ineligible for a phonetic pass. The JSONL
+includes both prompts, both model responses and reasoning traces, the tool
+evidence for every attempt, and the model's selection. The thinking budget
+is 2,304 tokens per phase.
+
 ## Project Structure
 
 ```
