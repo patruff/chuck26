@@ -5,7 +5,7 @@ MODEL_RUN:
   Full traces: results/2026-11-08-qwen-27b/humor-first-traces.jsonl
 
 HUMAN_FEEDBACK:
-The jokes should be more edgy and wild. The recent examples weren't extreme enough.
+The Cumming Man is okay but The Cumming Klan is better since it involves both racism (KKK) and vulgarity (ejaculation) you get points for combination (also the phonetics are fine). For Hoe Story this is too tame, the audience would have preferred Boy Story because this would imply pedophilia which to the audience is funny. Top Gun to Pop Gun is way too tame as well, it could be called Top Cum or Pop Cum and this would be better.
 
 MODEL_RUN:
   The original first-turn test picked The Hunning Man and attributed 0.83 to "hunning". That score belongs to "huning". Neither March tool scored the proposed spelling.
@@ -20,4 +20,4 @@ MODEL_RUN:
   Source: results/2026-11-08-human-guidance/results.jsonl
 
 HUMAN_FEEDBACK:
-The original Colab reasoning worked better. These choices feel tame. Start from the actual suggested words, go for a much wilder joke that lands in the title, and show which words, tool calls and observations led to the choice.
+Again these are way too tame, not edgy or adult-themed enough.
