@@ -43,6 +43,9 @@ def main():
             for name in z.namelist():
                 if not re.fullmatch(r"[0-9]{3}-[01]\.json\.gz", name):
                     raise ValueError("Unrecognized checkpoint filename")
+                rank = os.getenv("BLIND_RANK")
+                if rank and int(name[:3]) != int(rank):
+                    continue
                 (target / name).write_bytes(z.read(name))
         return
     if args.mode == "prepare":

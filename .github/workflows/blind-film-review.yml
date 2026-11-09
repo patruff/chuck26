@@ -12,6 +12,9 @@ on:
       key_id:
         description: Suffix of the one-run BLIND_RECIPIENT_ secret
         required: true
+      rank:
+        description: Optional single film rank within the selected shard
+        type: string
       shards:
         description: JSON array of film shards (0 through 4)
         default: '[0,1,2,3,4]'
@@ -31,6 +34,7 @@ jobs:
       LLAMA_REV: 7d7f0287530bc8981690f361d8c1627dbae1c99a
       HF_REV: ab8d7bd81d03117501e4da60cccdff4c80f0eea0
       SHARD: ${{ matrix.shard }}
+      BLIND_RANK: ${{ inputs.rank }}
       PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +86,9 @@ jobs:
           env -u CHUCKLES_2025_BANK_GZ "$target/build/bin/llama-server" --model "$target/model.gguf" --alias film-review --lora "$target/adapter.gguf" --lora-init-without-apply --host 127.0.0.1 --port 8080 --jinja --reasoning-format deepseek --reasoning-budget 48 -np 3 -c 6144 -t 4 -tb 4 >"$target/server.log" 2>&1 &
           server=$!
           trap 'kill "$server" 2>/dev/null || true' EXIT
-          python pipeline/blind_film_run.py --shard "$SHARD" --work "$target" --report "$target/report.json"
+          options=()
+          if [[ -n "$BLIND_RANK" ]]; then options+=(--rank "$BLIND_RANK"); fi
+          python pipeline/blind_film_run.py --shard "$SHARD" --work "$target" --report "$target/report.json" "${options[@]}"
       - name: Seal completed trajectories
         if: always()
         env:

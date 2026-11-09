@@ -315,6 +315,9 @@ def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shard", type=int, choices=range(5), required=True)
+    parser.add_argument(
+        "--rank", type=int, choices=RANKS, help="Run just one film in this shard"
+    )
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
@@ -328,14 +331,21 @@ def main():
     excluded = {p["film"]["title"].casefold() for p in report["preferences"]} | {
         p["film"].casefold() for p in report["generations"]
     }
+    ranks = RANKS[args.shard :: 5]
+    if args.rank is not None:
+        if args.rank not in ranks:
+            parser.error("The requested rank is not in this shard")
+        ranks = [args.rank]
     films = [
         f
         for f in csv.DictReader(
             (ROOT / "pipeline/film_lists/top200_1990_2015.csv").open()
         )
-        if int(f["rank"]) in RANKS[args.shard :: 5]
+        if int(f["rank"]) in ranks
     ]
-    assert len(films) == 3 and not any(f["title"].casefold() in excluded for f in films)
+    assert len(films) == len(ranks) and not any(
+        f["title"].casefold() in excluded for f in films
+    )
     bank = snapshot_bank(None, args.work)
     words, phones = load_word_bank(bank)
     assert len(words) == len(phones) == 1565
