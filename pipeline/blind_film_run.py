@@ -64,12 +64,39 @@ def request_step(messages, seed, scale, schema, limit):
             "type": "json_schema",
             "json_schema": {"name": "response", "strict": True, "schema": schema},
         }
-    result = requests.post(SERVER + "/v1/chat/completions", json=body, timeout=6000)
-    result.raise_for_status()
-    completion = result.json()["choices"][0]
-    reply = completion["message"]
-    text = reply.get("content") or ""
-    thinking = reply.get("reasoning_content") or reply.get("reasoning") or ""
+    # The server can take a long time to decode on CPU. Apply a timeout to
+    # inactivity and preserve the tokens it returned if the connection closes.
+    text_parts, thinking_parts = [], []
+    finish = "stream_closed"
+    body["stream"] = True
+    try:
+        with requests.post(
+            SERVER + "/v1/chat/completions", json=body, stream=True, timeout=(20, 420)
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines(chunk_size=1):
+                if not line.startswith(b"data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == b"[DONE]":
+                    break
+                packet = json.loads(payload)
+                if packet.get("error"):
+                    raise RuntimeError("Native server returned a streaming error")
+                for choice in packet.get("choices", []):
+                    delta = choice.get("delta", {})
+                    text_parts.append(delta.get("content") or "")
+                    thinking_parts.append(
+                        delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    )
+                    finish = choice.get("finish_reason") or finish
+    except (
+        requests.Timeout,
+        requests.ConnectionError,
+        requests.exceptions.ChunkedEncodingError,
+    ):
+        finish = "transport_interrupted"
+    text, thinking = "".join(text_parts), "".join(thinking_parts)
     if "<think>" in text and "</think>" in text:
         before, text = text.split("</think>", 1)
         thinking = thinking or before.partition("<think>")[2]
@@ -78,7 +105,8 @@ def request_step(messages, seed, scale, schema, limit):
         reasoning=thinking,
         model_output=text,
         settings=settings,
-        finish_reason=completion["finish_reason"],
+        finish_reason=finish,
+        transport="event-stream",
         response_schema=schema,
     )
 
@@ -92,6 +120,14 @@ def model_call(messages, seed, scale, schema=None):
             for name in ("idea", "why"):
                 if name in applied["properties"]:
                     applied["properties"][name]["maxLength"] = 180
+            if any(
+                r["finish_reason"] in ("transport_interrupted", "stream_closed")
+                for r in earlier
+            ):
+                # The exact permitted titles remain in the judge prompt and are
+                # validated below, even when we retry with a simpler grammar.
+                for prop in applied["properties"].values():
+                    prop.pop("enum", None)
         step = request_step(messages, seed, scale, applied, limit)
         text = step["model_output"].strip()
         usable = bool(text) and step["finish_reason"] == "stop"
@@ -99,7 +135,12 @@ def model_call(messages, seed, scale, schema=None):
             try:
                 parsed = json.loads(text)
                 usable = isinstance(parsed, dict) and all(
-                    isinstance(parsed.get(k), str) and parsed[k].strip()
+                    isinstance(parsed.get(k), str)
+                    and parsed[k].strip()
+                    and (
+                        "enum" not in schema["properties"][k]
+                        or parsed[k] in schema["properties"][k]["enum"]
+                    )
                     for k in schema["required"]
                 )
             except (ValueError, TypeError):
