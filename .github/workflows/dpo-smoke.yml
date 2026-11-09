@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       test_id:
-        description: Suffix of the CHUCKLES_DPO_ repository secret containing the private test request
+        description: Key ID printed by review_cycle.py train --prepare-only
         type: string
         required: true
       dataset_file:

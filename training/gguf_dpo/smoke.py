@@ -61,8 +61,12 @@ def prepare(data, assets, folder):
 
 def run_native(args, mode, adapter, label):
     output = args.work / (label + ".bin")
-    subprocess.run([args.driver, args.model, adapter or "-", mode,
-                    args.work / (mode + ".txt"), output], check=True)
+    plan=args.work / (mode + ".txt")
+    # Edited prompts and their judged examples can exceed the original smoke-test context.
+    with plan.open() as rows:
+        lengths=[line.split(maxsplit=3)[:3] for line in rows]
+    context=max(768, max(int(size)+int(limit) for size, _, limit in lengths))
+    subprocess.run([args.driver, args.model, adapter or "-", mode, plan, output, str(context)], check=True)
     return output
 
 

@@ -20,9 +20,9 @@ sys.path.insert(0, str(ROOT / "pipeline"))
 from trace_review import transcript
 
 if __package__:
-    from .blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs, blind_transcript
+    from .blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs, blind_transcript, preference_system
 else:
-    from blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs, blind_transcript
+    from blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs, blind_transcript, preference_system
 
 DEFAULT_SOURCES = [
     ROOT / "results" / "movielens-200" / "samples",
@@ -105,7 +105,7 @@ def review_pair(film, first, second, collection):
         ),
     )
     prompt = [
-        {"role": "system", "content": ra.get("audience_prompt", PROMPT)},
+        {"role": "system", "content": preference_system(ra, PROMPT)},
         {
             "role": "user",
             "content": "Movie: "

@@ -17,18 +17,7 @@ def read_titles(csv_path: str) -> list[str]:
 def compact_suggestions(
     suggestions: dict[str, Any], top_n: int = 5
 ) -> dict[str, Any]:
-    """Trim pre_compute_suggestions() output for prompt injection.
-
-    Keeps only the top-N candidates per word as {word, similarity}, dropping
-    phones/endings/sub-scores that would bloat the training context window.
-
-    Args:
-        suggestions: Raw output of pre_compute_suggestions().
-        top_n: Max candidates to keep per title word.
-
-    Returns:
-        Dict mapping each title word to a list of {word, similarity} dicts.
-    """
+    """Keep each suggested word and its March similarity score for the model. How many to show is set by top_n."""
     compact: dict[str, Any] = {}
     for word, info in suggestions.items():
         if not isinstance(info, dict):

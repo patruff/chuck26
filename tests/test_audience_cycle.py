@@ -50,7 +50,11 @@ def test_native_model_can_pick_a_single_off_list_swap(
                 "second": "Jurassic Lark",
                 "idea": "Two different premises.",
             }
-        return dict(model_output=json.dumps(answer), reasoning="Compare the two jokes.")
+        return dict(
+            model_output=json.dumps(answer),
+            reasoning="Compare the two jokes.",
+            input_messages=messages,
+        )
 
     class Phone:
         def __init__(self, *args):
@@ -86,6 +90,22 @@ def test_native_model_can_pick_a_single_off_list_swap(
     assert obj["parody"] == "Jurassic Lark" and obj["runner_up"] == "Jurassic Pork"
     assert all(p[0]["content"] == "Audience fixture" for p in inputs)
     assert obj["audience_prompt"] == "Audience fixture" and obj["passes_threshold"]
+    from scripts.review_films import review_pair, ReviewStore
+
+    sample = tmp_path / "007-0.json.gz"
+    pair = review_pair(
+        {"rank": 7, "title": "Jurassic Park"}, (obj, sample), (obj, sample), "demo"
+    )
+    store = ReviewStore(tmp_path / "labels")
+    store.update([(pair, "a", "The payoff is audible.", "")])
+    dpo = json.loads(store.export.read_text())
+    assert (
+        dpo["prompt"][0]["content"]
+        == "Audience fixture\n\nReturn just the parody title."
+    )
+    assert (
+        dpo["feedback"] == "The payoff is audible." and dpo["chosen"] != dpo["rejected"]
+    )
 
 
 def test_dpo_request_uses_choices_without_private_comments(tmp_path):

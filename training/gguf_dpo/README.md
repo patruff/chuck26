@@ -4,7 +4,7 @@
 
 The trainer saves the GGUF adapter, reloads it in a fresh llama.cpp process and checks that the native margins match the trained policy. The comparison report includes the input and adapter checksums, loss, per-film margins, and greedy generations with and without the adapter. The reviewed file and its comments stay local by default. [Prepare training, fetch the adapter and start the next comparison](../../README.md#train-and-judge-the-next-adapter)
 
-To load your downloaded adapter yourself:
+Start llama.cpp with the downloaded adapter and its original base file.
 
 ```sh
 llama-server -m RVN-Q4_K_M-multilingual.gguf --lora chuckles-27b-dpo.gguf --jinja

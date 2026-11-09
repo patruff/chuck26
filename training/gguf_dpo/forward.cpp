@@ -18,7 +18,7 @@ static void write_int(std::ofstream &out, int32_t value) {
 }
 
 int main(int argc, char **argv) try {
-    check(argc == 6, "usage: forward MODEL ADAPTER-or-dash MODE PLANS OUTPUT");
+    check(argc == 6 || argc == 7, "usage: forward MODEL ADAPTER-or-dash MODE PLANS OUTPUT [CONTEXT]");
     const bool features = std::string(argv[3]) == "features";
     check(features || std::string(argv[3]) == "greedy", "unknown mode");
 
@@ -28,7 +28,9 @@ int main(int argc, char **argv) try {
     auto *model = llama_model_load_from_file(argv[1], mp);
     check(model != nullptr, "GGUF load failed");
     auto cp = llama_context_default_params();
-    cp.n_ctx = 768;
+    const int context = argc == 7 ? std::stoi(argv[6]) : 768;
+    check(context > 0 && context <= llama_model_n_ctx_train(model), "prompt exceeds model context");
+    cp.n_ctx = context;
     cp.n_batch = cp.n_ubatch = 256;
     cp.n_threads = cp.n_threads_batch = 4;
     cp.embeddings = features;
@@ -54,7 +56,7 @@ int main(int argc, char **argv) try {
     int size, prefix, limit, row = 0;
     auto batch = llama_batch_init(cp.n_batch, 0, 1);
     while (plans >> size >> prefix >> limit) {
-        check(size > 0 && prefix > 0 && prefix <= size && size + limit < 768, "invalid sequence length");
+        check(size > 0 && prefix > 0 && prefix <= size && limit >= 0 && int64_t(size) + limit <= context, "invalid sequence length");
         std::vector<llama_token> ids(size);
         for (auto &id : ids) {
             check(bool(plans >> id) && id >= 0 && id < n_vocab, "bad token ID");

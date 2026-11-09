@@ -1,5 +1,8 @@
 name: 1. Generate parodies for review
 on:
+  push:
+    branches: [main]
+    paths: [guidance/human-feedback.txt]
   workflow_dispatch:
     inputs:
       mode:
@@ -66,7 +69,7 @@ jobs:
           python pipeline/run_gguf_test.py --preflight-only
   runpod:
     needs: prompt
-    if: inputs.mode == 'runpod'
+    if: github.event_name == 'push' || inputs.mode == 'runpod'
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     steps:
@@ -84,19 +87,22 @@ jobs:
           CHUCKLES_PROMPT_FILE: ${{ github.workspace }}/prompt/system-prompt.txt
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
-          FEEDBACK_FILE: ${{ inputs.feedback_file }}
+          FEEDBACK_FILE: ${{ github.event_name == 'push' && 'guidance/human-feedback.txt' || inputs.feedback_file }}
           MOVIE_TITLE: ${{ inputs.movie }}
           FILM_RANK: ${{ inputs.rank }}
         run: |
-          movie="$MOVIE_TITLE"
-          if [[ -z "$movie" ]]; then movie=$(python -m pipeline.film_lists.select_film "$FILM_RANK"); fi
           options=()
+          if [[ -n "$MOVIE_TITLE" ]]; then
+            options+=(--title "$MOVIE_TITLE")
+          elif [[ -n "$FILM_RANK" ]]; then
+            options+=(--title "$(python -m pipeline.film_lists.select_film "$FILM_RANK")")
+          fi
           if [[ -n "$FEEDBACK_FILE" ]]; then
             [[ "$(realpath -e -- "$FEEDBACK_FILE")" == "$GITHUB_WORKSPACE"/guidance/*.txt ]]
             git --literal-pathspecs ls-files --error-unmatch -- "$FEEDBACK_FILE"
             options+=(--human-guidance "$FEEDBACK_FILE")
           fi
-          python pipeline/run_gguf_test.py --title "$movie" --output-dir out/run "${options[@]}"
+          python pipeline/run_gguf_test.py --output-dir out/run "${options[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

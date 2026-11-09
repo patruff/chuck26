@@ -10,6 +10,11 @@ COLLECTION = "blind-27b-15"
 LABELS = {"original": "Original 27B", "adapter": "27B with DPO adapter"}
 
 
+def preference_system(row, historical_prompt):
+    audience = row.get("audience_prompt")
+    return audience + "\n\nReturn just the parody title." if audience else historical_prompt
+
+
 def fingerprint(value):
     return hashlib.sha256(
         json.dumps(
@@ -191,7 +196,7 @@ def load_blind_pairs(directory, prompt_system, location):
             shared_trace=False,
             blind=True,
             prompt=[
-                {"role": "system", "content": rows[0].get("audience_prompt",prompt_system)},
+                {"role": "system", "content": preference_system(rows[0], prompt_system)},
                 {
                     "role": "user",
                     "content": "Movie: "
