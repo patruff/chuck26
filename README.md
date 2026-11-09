@@ -1,484 +1,52 @@
-# chucklesPRIME
+# Chuckles
 
-Phonetically-sound parody title generator with DPO preference dataset output.
+Chuckles writes movie-title parodies for an adult audience. The working cycle is **generate → judge and comment → export DPO preferences → train an adapter → compare again**.
 
-Generates funny parody titles (e.g. "The Matrix" -> "The Mattress") using AI agents with phonetic verification tools, then provides workflows for human review and DPO (Direct Preference Optimization) dataset creation.
+**[Open the inference form](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml)** and click **Run workflow**. The **system_prompt** field is prefilled with the exact audience instructions and judged examples. Edit it for this run. For a lasting change, edit the field’s default in [the kickoff workflow](.github/workflows/human-guidance.yml). Local runs read that same default. Each new run saves its prompt and prints it in the Actions summary.
+
+The model is **0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF**, using `RVN-Q4_K_M-multilingual.gguf`. The revision, weight checksum, llama.cpp commit and RunPod image are pinned together in [config/model.json](config/model.json). A DPO run adds a LoRA to these weights.
+
+## GitHub Actions
+
+| Action | When to use it | What comes back |
+| --- | --- | --- |
+| [1. Generate parodies for review](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml) | Pick a [movie rank](pipeline/film_lists/top200_1990_2015.csv) and edit the audience prompt. **base-cpu** generates with the original model on a GitHub runner. **runpod** runs the smolagents CodeAgent on a rented GPU. **compare-adapter** runs both model configurations on a held-out movie. **preview** checks the prompt, bank and historical scores without renting a GPU. | Exact prompt plus a `review-ready` artifact for base or RunPod inference, or a recipient-encrypted `sealed-review` for comparison. |
+| [2. Train a DPO adapter from reviews](https://github.com/patruff/chuck26/actions/workflows/dpo-smoke.yml) | Supply the key ID from the review-export command below. This trains the tested rank-4 output-layer adapter on your actual A/B preferences and reloads it in llama.cpp. | Encrypted adapter and comparison report. The training run number and key ID identify the adapter in the next inference form. |
+| [3. RunPod bulk generation and resume](https://github.com/patruff/chuck26/actions/workflows/film-review-batch.yml) | Generate two independent CodeAgent trajectories per movie, or resume an interrupted shard. Leave **prompt_snapshot** blank for the current prompt. Use **shards** `[0]` with **ranks** such as `[35,45]` for a targeted batch. | Per-side compressed checkpoints. Download a shard and point the app at its `samples/` directory. |
 
 ## Review film parodies and export DPO
 
-The MovieLens batch has 185 reviewable films out of 200. Browse the [current pairs](results/movielens-200/CATALOG.md) or see the [checkpoints and restart commands for the last 15](results/movielens-200/README.md#resume-the-last-15-films).
+From this checkout on macOS or Linux with Python 3.10+ and authenticated `gh`:
 
-Run the local Python app from a checkout. It needs Flask and Python 3.10+ on macOS or Linux.
-
-```bash
-python -m pip install 'Flask>=3'
+```sh
+python -m pip install -e '.[trace-export]'
+python scripts/review_cycle.py fetch INFERENCE_RUN
 python scripts/review_films.py
 ```
 
-Open **http://127.0.0.1:5118**. Select the recent feedback run or the ranked film collection. Each movie shows two distinct parodies, pitches, changed-word scores and whether each swap came from the 2025 suggestions. Expand a trace to see Qwen’s thinking, executed Python and actual tool returns. The recent run compares two finalists from the same trajectory. The 200-film batch samples separate trajectories with different seeds. If both trajectories pick the same title, the app uses a distinct verified finalist from one of them and retains the original trace.
+Open [the review app](http://127.0.0.1:5118). New runs appear as `inference-RUN`; the app also reads the [185-film catalog](results/movielens-200/CATALOG.md) and earlier feedback results. For a downloaded artifact, use `python scripts/review_films.py --input /path/to/artifact`. The original blind 15-film collection loads from `reviews/blind-27b-15/`.
 
-The **Blind 27B comparison** collection loads local paired samples from `reviews/blind-27b-15/`. Each card shows one actual model selection, including when the two titles match. Expand **Reasoning and tool calls** to see the returned thinking and the chronological transcript before voting. Save **Prefer A**, **Prefer B**, **Equally funny**, or **Neither works**, then optionally reveal the identities for that film. Ties, neither votes and identical-title comparisons stay in the preference backup and generate no DPO row.
+Read both pitches and expand their reasoning and phonetic checks. Save **Prefer A**, **Prefer B** or **Neither works**, with an optional comment. Blind comparisons also allow **Equally funny**; attribution can be revealed for that film after voting. The app writes all decisions to `reviews/film_preferences.jsonl`. Each A/B choice between distinct titles produces a row in `reviews/reviewed_dpo.jsonl` with the shared prompt, chosen title, rejected title, feedback and exact trace references. **Download DPO** exports that file. Use **Transfer reviews** to import a prior export or backup.
 
-Choose **Prefer A**, **Prefer B**, or **Neither works**, add an optional comment and save. The app moves to the next unreviewed movie. Jump back to change or clear a vote. Your selections are saved locally after each review.
+## Train and judge the next adapter
 
-| File | What it contains |
-| --- | --- |
-| [reviews/reviewed_dpo.jsonl](reviews/reviewed_dpo.jsonl) | One conversational `prompt`, `chosen`, and `rejected` row per human A/B preference, with the feedback, film metadata and the two trace references. |
-| [reviews/film_preferences.jsonl](reviews/film_preferences.jsonl) | The review backup, including comments on pairs where neither joke worked. |
-
-The files start empty. Only a saved human preference produces a training row. Tool traces stay in the generation files, linked by file path, seed and record hash. The DPO responses contain the final titles. Download either file in the app, or add the two JSONL files to the repository after reviewing. **Transfer reviews** imports a backup or an app-exported DPO file and checks that it matches the displayed pair.
-
-To review another RunPod artifact, pass `--input /path/to/results.jsonl`, a compressed JSONL or a directory of paired sample files. You can repeat the flag. To keep a separate set of labels, pass `--reviews /path/to/reviews`.
-
-The ranked list covers releases in 1990–2015 inclusive, ordered by number of ratings in MovieLens 32M. If a sampled agent exhausts its steps after verifying its nominees, a recovery call can ask the same Qwen model to choose from those recorded, eligible slates. The trace preserves the original error and the separate decision, with both seeds. A fallback requires two completely checked slates and no qualifying nominee. The **paired-film-review** Action checkpoints each side independently. Its **prompt_snapshot** input selects a committed guidance file and matching Qwen prompt revision (the default directs adult material toward adult subjects), and **resume_run** restores the sample files from a previous workflow run. [Film list](pipeline/film_lists/top200_1990_2015.csv) · [Ranking method](pipeline/film_lists/README.md) · [Recent feedback run](results/feedback-0c3cc72/README.md)
-
-When you are ready to fine-tune in the repo’s configured training environment, its existing DPO trainer accepts `python training/train_dpo.py --dataset reviews/reviewed_dpo.jsonl`. The trainer renders the shared Qwen prompt and scores the two title completions. The review app itself only writes data.
-
-The [27B GGUF DPO smoke test](training/gguf_dpo/README.md) trains an output-layer LoRA on the same weights used for the parody runs. It saves a llama.cpp adapter and compares base and adapted inference on matched prompts.
-
-## Qwen 27B on RunPod
-
-The 27B workflow uses the pinned 2025 suggested words and pronunciations. Run
-the corrected notebook in Colab or select **gguf-test** in GitHub Actions.
-[Open in Colab](https://colab.research.google.com/github/patruff/chuck26/blob/main/notebooks/Chuckles_RunPod.ipynb) · [Notebook source](notebooks/Chuckles_RunPod.ipynb) · [Ten-movie results and reasoning traces](results/2026-11-08-qwen-27b/README.md)
-
-## Teach Qwen what you find funny
-
-**[Read the current movie transcripts](results/2026-11-08-colab-suggestions/CURRENT-TRANSCRIPTS.md)** for the actual suggested words, full Qwen thinking, Python calls and phonetic returns. The [Toy Story transcript](results/2026-11-08-colab-suggestions/toy-story-rerun/transcripts/01-toy-story.md) follows the choice between *Hoe Story* and *Boy Story*. The [current feedback file](results/2026-11-08-colab-suggestions/review-next.txt) has a comment field beneath each movie.
-
-Edit [guidance/human-feedback.txt](guidance/human-feedback.txt) and commit it to `main`. That edit starts the [human-guidance Action](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml) and rents a RunPod GPU for ten fresh titles. You can also open the Action, choose **Run workflow**, and enter the path to another committed `.txt` file under `guidance/`. A single file is all the run needs from you. For a one-title rerun, enter its name in the optional **movie** field.
-
-Put a prior result, its rationale, or a relevant excerpt of its trace under `MODEL_RUN:`. Add your own comments under `HUMAN_FEEDBACK:`. Both labels start at the beginning of a line. You can add as many example/comment pairs as fit in the model context.
-
-```text
-MODEL_RUN:
-Top Gun → Pop Gun. The pitch turned the dogfight into a children's party.
-HUMAN_FEEDBACK:
-The jokes should be more edgy and wild. The recent examples weren't extreme enough.
+```sh
+python scripts/review_cycle.py validate "/path/to/reviewed_dpo.jsonl"
+python scripts/review_cycle.py train "/path/to/reviewed_dpo.jsonl" --key .private/dpo.pem
 ```
 
-Qwen reads the examples and your comments and adds up to 60 words of creative direction to the original Colab comedy role. Every movie keeps the Colab's humor-first system instruction, explicit audience preferences, and the full ranked list of word suggestions and scores. Short feedback is also quoted verbatim in the generation task. Each movie starts with fresh drafts and uses the verified 2025 suggestions, exact-spelling tool checks, and inclusive 0.60 floor. The revision applies at inference time.
+The second command creates or reuses your local recipient key, prints a **key ID**, and starts training. Use `--prepare-only` to set up the private request and launch Action 2 yourself. The request sends the actual prompt and title pairs; reviewer notes and tool traces stay in the full export. For a large export you deliberately committed to `reviews/` on GitHub main, use `--tracked` with its local path. [DPO training and model details](training/gguf_dpo/README.md)
 
-The Action summary shows one full transcript. Download the **human-guidance** artifact and open **TRACE-INDEX.md** for all movies. Each movie has a readable transcript. It starts with the controller’s actual suggestion lookup, then shows every recorded Qwen thinking block, executed Python, tool return, error, and final choice in order. `prompt-revision.json` shows the original and applied instructions. `results.jsonl` contains each draft, the model's reasoning, the actual system messages and phonetic observations. `candidates.jsonl` contains turns awaiting human review. The artifact also includes the original text and the exact input to the prompt editor. If you paste a very long trace, the editor retains its beginning and end and marks the omission. It preserves all human comments. Comments totaling more than 1,536 tokens inform the revision through the editor alone.
-
-For the next round, copy the artifact's **next-feedback.txt** over `guidance/human-feedback.txt`. It carries forward your comments and the model's previous style instructions, adds the complete step-by-step movie transcripts, and leaves a blank `HUMAN_FEEDBACK:` under each movie. Fill in the movies you want to comment on and commit the file. Newer comments take priority when your preferences change.
-
-The first guided batch used the feedback “more edgy and wild.” Eight of ten movies had qualifying winners. The before-and-after table, recorded prompt revision and editable review file are in the [first guided run](results/2026-11-08-human-guidance/README.md).
-
-A checkout with the RunPod and 2025-bank credentials configured can run the same file locally.
-
-```bash
-pip install -e '.[trace-export]' 'smolagents==1.24.0' 'huggingface-hub==0.36.0' 'setuptools<81'
-python pipeline/run_gguf_test.py --human-guidance guidance/human-feedback.txt --output-dir out/guided-01
+```sh
+python scripts/review_cycle.py fetch TRAINING_RUN --key .private/dpo.pem
 ```
 
-## Generating a DPO Dataset: Step-by-Step
-
-There are two workflows for reviewing parodies and building DPO data: **GitHub PR-based** and **Google Drive-based**. Both track provenance (model name, adapter/LoRA) for every candidate.
-
----
-
-### Option A: GitHub PR Review Workflow
-
-Best for async team review via pull requests.
-
-#### Prerequisites
-
-Add these secrets to your GitHub repository (Settings > Secrets > Actions):
-
-| Secret | Purpose |
-|--------|---------|
-| `CEREBRAS_API_KEY` | API key for the generation model |
-| `HF_TOKEN` | HuggingFace token with write access |
-
-#### Step 1: Trigger Generation
-
-Go to **Actions > Generate Parodies for Review > Run workflow** and configure:
-
-- **Model**: e.g. `qwen-3-32b` (default)
-- **Adapter**: LoRA adapter name, if any (leave empty for base model)
-- **Input CSV**: path to CSV with titles (default: `titles.csv`)
-- **Titles count**: number of titles to sample (default: 10)
-
-This generates parodies and opens a PR with a review CSV.
-
-#### Step 2: Review the CSV
-
-Open the PR. The CSV in `reviews/pending/` has these columns:
-
-| Column | Description |
-|--------|-------------|
-| `id` | Row identifier |
-| `input_title` | Original title |
-| `parody_text` | Generated parody |
-| `humor_note` | Model's humor explanation |
-| `phonetic_scores` | Per-word phonetic similarity (JSON) |
-| `avg_phonetic_score` | Average phonetic score |
-| `model_name` | Which model generated this |
-| `adapter` | Which adapter/LoRA was used |
-| `status` | **Edit this**: `chosen`, `rejected`, or leave as `pending` |
-
-Edit the `status` column for each row:
-
-- **`chosen`** - Good parody (will be the preferred response in DPO)
-- **`rejected`** - Bad parody (will be the dispreferred response in DPO)
-- **`pending`** - Skip this row
-
-For each `input_title`, you need at least one `chosen` and one `rejected` to form a DPO pair. Every (chosen, rejected) combination for the same title becomes one training example.
-
-#### Step 3: Merge the PR
-
-Commit your edits and merge. The **Process Reviews** workflow automatically:
-
-1. Reads the CSV and groups rows by `input_title`
-2. Forms DPO pairs from all (chosen, rejected) combinations per title
-3. Appends pairs to the HuggingFace DPO dataset (default: `patruff/chuckles-dpo`)
-4. Moves the CSV to `reviews/processed/`
-
-#### Step 4: Verify
-
-Check your HuggingFace dataset. Each DPO row includes:
-
-```json
-{
-  "prompt": [
-    {"role": "system", "content": "You are a comedy writer..."},
-    {"role": "user", "content": "Create a phonetically-sound parody of: 'The Matrix'"}
-  ],
-  "chosen": [{"role": "assistant", "content": "The Mattress"}],
-  "rejected": [{"role": "assistant", "content": "The Madness"}],
-  "chosen_model": "qwen-3-32b",
-  "chosen_adapter": "",
-  "rejected_model": "qwen-3-32b",
-  "rejected_adapter": "my-lora-v1",
-  "chosen_phonetic_score": "0.820",
-  "rejected_phonetic_score": "0.710"
-}
-```
-
----
-
-### Option B: Google Drive Review Workflow
-
-Best for reviewing directly in Google Sheets.
-
-#### Prerequisites
-
-1. Create a Google Cloud service account with Drive API access
-2. Share a `chuck26` folder with the service account email
-3. Add these secrets to GitHub (or set as environment variables locally):
-
-| Secret / Env Var | Purpose |
-|------------------|---------|
-| `GOOGLE_DRIVE_CREDENTIALS` | Full JSON of the service account key |
-| `CEREBRAS_API_KEY` | API key for the generation model |
-| `HF_TOKEN` | HuggingFace token with write access |
-
-#### Step 1: Add Input Titles
-
-Upload a CSV with a `title` column to `chuck26/input/` in Google Drive:
-
-```csv
-title
-The Matrix
-Die Hard
-Fight Club
-Top Gun
-```
-
-#### Step 2: Generate Parodies
-
-**Via GitHub Actions:**
-
-Go to **Actions > Drive Review App > Run workflow**, select `generate`, and configure the model/adapter/limit.
-
-**Or run locally:**
-
-```bash
-pip install -e ".[drive]"
-export GOOGLE_DRIVE_CREDENTIALS='{"type":"service_account",...}'
-export CEREBRAS_API_KEY="your-key"
-
-python scripts/drive_review_app.py generate --model qwen-3-32b --limit 10
-```
-
-Generated review CSVs appear in `chuck26/to_be_checked/`.
-
-#### Step 3: Review in Google Sheets
-
-Open the CSV in `chuck26/to_be_checked/` with Google Sheets. Edit the `status` column:
-
-- `chosen` for good parodies
-- `rejected` for bad parodies
-- Leave as `pending` to skip
-
-Save the file (keep it as CSV).
-
-#### Step 4: Process Reviews
-
-**Via GitHub Actions:**
-
-Go to **Actions > Drive Review App > Run workflow**, select `process`.
-
-**Or run locally:**
-
-```bash
-export HF_TOKEN="your-hf-token"
-python scripts/drive_review_app.py process --dpo-repo patruff/chuckles-dpo
-```
-
-This:
-1. Downloads reviewed CSVs from `to_be_checked/`
-2. Builds DPO preference pairs
-3. Appends to the HuggingFace dataset
-4. Moves processed CSVs to `chuck26/finished_preference/`
-
-#### Step 5: Check Status
-
-See what's in each folder:
-
-```bash
-python scripts/drive_review_app.py status
-```
-
-Output:
-```
-chuck26/input/ (1 CSV files)
-  titles.csv
-
-chuck26/to_be_checked/ (0 CSV files)
-  (empty)
-
-chuck26/finished_preference/ (1 CSV files)
-  review-titles-20260131-143022-done.csv
-```
-
----
-
-## Running Locally (No Google Drive)
-
-You can also run generation + review entirely on your local filesystem:
-
-```bash
-# Generate review CSV
-python scripts/generate_for_review.py titles.csv \
-    --output-dir reviews/pending \
-    --model qwen-3-32b \
-    --adapter my-lora
-
-# Edit reviews/pending/review-*.csv manually (change status column)
-
-# Process into DPO data
-python scripts/process_reviews.py \
-    --reviews-dir reviews/pending \
-    --dpo-repo patruff/chuckles-dpo
-```
-
----
-
-## Reasoning SFT Pipeline (RunPod)
-
-Trains a Qwen3 LoRA adapter that *reasons* about phonetic swaps inside
-`<think>` tags before answering, then generates parodies for the top movies
-of 1995-1999. Training data is built from `patruff/chucklesClean720`
-(~3,200 human-approved pairs) with suggestions from the
-`patruff/parody-suggestions` + `patruff/word-phone` HF tools injected into
-every prompt — the same prompt format is used at inference.
-
-### Kick it off from GitHub Actions
-
-Go to **Actions > Reasoning SFT Pipeline > Run workflow**. Leave
-**test_mode** checked for the first run (Qwen3-0.6B, ~50 pairs, 20 steps,
-a few dollars at most); uncheck it for the full Qwen3-8B run.
-
-The job:
-1. Builds the reasoning dataset on the runner (CPU) and pushes it to
-   `patruff/chuckles-reasoning-sft`.
-2. Rents a RunPod GPU (default RTX 4090, community cloud). The pod clones
-   this repo, trains with QLoRA, pushes the adapter to
-   `patruff/chuckles-reasoning-adapter`, generates parodies for
-   `pipeline/movie_titles_1995_1999.csv`, and uploads its log + results.
-3. Polls the Hub until the adapter lands, prints the parodies with their
-   tool-verified phonetic scores, **always terminates the pod**, and writes
-   elapsed time + estimated GPU cost to the job summary.
-
-Secrets needed: `RUNPOD_API_KEY` and `HUGGINGFACE_API_KEY` (or `HF_TOKEN`)
-with **write** scope. `CEREBRAS_API_KEY` is not used by this pipeline.
-
-### Run locally
-
-```bash
-export HF_TOKEN=hf_... RUNPOD_API_KEY=...
-pip install -e . && pip install runpod
-
-# 1. Build the dataset (CPU)
-python pipeline/build_reasoning_dataset.py --limit 50   # drop --limit for all
-
-# 2. Train + infer on a RunPod pod (no SSH needed; pod self-bootstraps)
-python pipeline/run_pipeline.py --test    # cheap validation first
-python pipeline/run_pipeline.py           # full 8B run
-
-# Emergency teardown if a pod is left running:
-python pipeline/run_pipeline.py --down <pod-id>
-```
-
-`pipeline/generate_with_reasoning.py` can also run anywhere with a GPU to
-try the adapter on any titles CSV.
-
-### Run the Qwen3.8 27B GGUF
-
-**Actions → Reasoning SFT Pipeline → gguf-test** and the CLI use the same
-smolagents CodeAgent, corrected Colab prompt and checksum-verified March 2025
-bank. The defaults are one Secure Cloud GPU, the ten films in
-`pipeline/humor_sample_titles.csv`, and an 80-minute limit. Use
-`infer_limit=1` for a smoke test. The workflow uploads its run manifest,
-generation traces and screened training candidates as the `chuckles-gguf-test`
-artifact. **gguf-preflight** runs the historical controls on CPU.
-
-```bash
-pip install -e '.[trace-export]' 'smolagents==1.24.0' 'huggingface-hub==0.36.0' 'setuptools<81'
-python pipeline/run_gguf_test.py --preflight-only
-# Set RUNPOD_API_KEY in the environment before the GPU run.
-python pipeline/run_gguf_test.py --limit 1 --output-dir out/chuckles-01
-python pipeline/export_humor_candidates.py out/chuckles-01/results.jsonl out/chuckles-01/candidates.jsonl \
-  --run-manifest out/chuckles-01/run.json
-```
-
-The bank comes from `word_structures.py` at commit `783c529` in
-`patruff/chuck2025`. The launcher accepts `--march-word-bank PATH`, an
-encrypted Actions secret named `CHUCKLES_2025_BANK_GZ` (base64 of the gzip
-file), a sibling `chuck2025` checkout, `CHUCK2025_READ_TOKEN`, or an
-authenticated GitHub CLI. It verifies SHA-256
-`c1ad29501bbc32c0fb8a2a0cefeefe82ca7bb441e1955d87e94fc630ffca9eff`
-and checks the original Running Man suggestions and scorer values before
-renting a GPU. The private source stays on the controller. The smaller
-`parodies2026/word_structures.py` in this repo has 226 words and four custom
-pronunciations. [Canonical bank](https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py)
-
-To provision the Actions secret in another checkout, use an authenticated
-GitHub CLI with permission to set repository secrets:
-
-```bash
-gzip -c ../chuck2025/word_structures.py | base64 | tr -d '\n' | gh secret set CHUCKLES_2025_BANK_GZ --repo patruff/chuck26
-```
-
-Qwen records three or four distinct pitches, each with a humor rating and
-comic premise, then nominates its funniest pitch using a returned swap and its funniest remaining word-aligned pitch. CodeAgent
-checks the exact spelling of each word in both finalists. Each changed word
-needs at least 0.60 from the pinned March `parody-suggestions` formula.
-`word-phone` supplies an independent rhyme/length/stress score. Once both
-titles qualify, a title using a listed change takes priority over an entirely off-list title. Qwen chooses on humor between equally eligible titles. With no returned changes it can invent its own. To skip available suggestions it must name a returned word and explain why the suggestions fall flat. The transcript records that exception. A verified earlier pair remains eligible after a new round of drafts. If no nominated pair supplies a qualifying winner,
-`qualifying_parody` is null and `fallback` identifies the model's best failed
-attempt. Only observed, qualifying results can enter the review-candidate export.
-
-The archived tool check gives 0.665 and 1.000 for *running → cumming*.
-*Running → huning* gets 0.830 and 1.000; *running → hunning* is unscorable
-in both tools. Each draft must explain what its changed phrase means and what
-makes the scene funny. The full controls and the rejected *Hunning* example
-are in the [batch findings](results/2026-11-08-qwen-27b/README.md).
-
-To replay the original Drive notebook, pass its local export with
-`--example-notebook`; add `--humor-first` for the two-phase batch.
-`--colab-notebook` selects the separate historical 0.80/321-entry experiment,
-and `--base-only` selects the old single-answer baseline. For a paired
-comparison, `--drafts-from results.jsonl` reuses only matching, pre-verification
-pitches. To compare the pinned tools' Python and complete Running Man input
-with the saved original notebook, run:
-
-```bash
-python pipeline/check_colab_replay.py --example-notebook may18CerebrasQwen3.ipynb \
-  --word-bank ../chuck2025/word_structures.py
-```
-
-## Project Structure
-
-```
-chuck26/
-├── src/chuckles_prime/        # Core package
-│   ├── cli.py                 # CLI: generate, convert, label, export-labels
-│   ├── generator.py           # Parody generation engine
-│   ├── dataset.py             # GRPO/DPO dataset builders
-│   ├── labeler.py             # Flask web UI for labeling
-│   ├── model.py               # OpenAI-compatible model adapter
-│   ├── config.py              # Settings loader
-│   ├── prompts.py             # Prompt templates
-│   ├── rewards.py             # Phonetic quality reward functions
-│   ├── tools.py               # HuggingFace tool loader
-│   ├── traces.py              # JSONL trace archival
-│   └── types.py               # ParodyCandidate, AgentTrace, GenerationRecord
-│
-├── scripts/
-│   ├── generate_for_review.py # Generate parodies -> review CSV
-│   ├── process_reviews.py     # Review CSV -> DPO dataset -> HuggingFace
-│   └── drive_review_app.py    # Google Drive three-folder workflow
-│
-├── pipeline/                  # Reasoning SFT pipeline (RunPod)
-│   ├── build_reasoning_dataset.py  # Human pairs -> <think> SFT data -> HF
-│   ├── train_reasoning_sft.py      # QLoRA trainer (runs on the pod)
-│   ├── generate_with_reasoning.py  # Inference + HF-tool phonetic scoring
-│   ├── run_pipeline.py             # Pod lifecycle + cost tracking
-│   ├── pod_bootstrap.sh            # Container command run by the pod
-│   ├── common.py                   # Shared prompt/trace/scoring helpers
-│   └── movie_titles_1995_1999.csv  # Top-10 movies per year, 1995-1999
-│
-├── .github/workflows/
-│   ├── generate-review.yml    # Generate parodies + open review PR
-│   ├── process-reviews.yml    # Process merged reviews -> HuggingFace DPO
-│   └── drive-review.yml       # Google Drive workflow (generate/process/status)
-│
-├── reviews/
-│   ├── pending/               # Review CSVs awaiting human review
-│   └── processed/             # Archived after DPO export
-│
-├── tests/                     # pytest test suite
-├── titles.csv                 # Default input titles
-├── parodies2026/              # Legacy prototype
-└── pyproject.toml
-```
-
-## Review CSV Format
-
-All workflows use the same CSV format:
-
-```csv
-id,input_title,parody_text,humor_note,phonetic_scores,avg_phonetic_score,model_name,adapter,status
-1,The Matrix,The Mattress,Sci-fi becomes furniture,{"Matrix": 0.82},0.820,qwen-3-32b,,pending
-2,The Matrix,The Madness,Mental health parody,{"Matrix": 0.71},0.710,qwen-3-32b,,pending
-```
-
-## DPO Pair Formation
-
-For each `input_title`, every (chosen, rejected) combination produces one DPO training pair:
-
-| chosen | rejected | pairs |
-|--------|----------|-------|
-| 1 chosen, 1 rejected | 1 pair |
-| 2 chosen, 1 rejected | 2 pairs |
-| 1 chosen, 2 rejected | 2 pairs |
-| 2 chosen, 2 rejected | 4 pairs |
-
-Provenance metadata is preserved so you can analyze which models/adapters produce preferred outputs.
-
-## Setup
-
-```bash
-# Install core package
-pip install -e .
-
-# Install with Google Drive support
-pip install -e ".[drive]"
-
-# Install dev dependencies (tests, linting)
-pip install -e ".[dev]"
-
-# Run tests
-pytest tests/
-```
-
-## Required Environment Variables
-
-| Variable | Used By | Purpose |
-|----------|---------|---------|
-| `CEREBRAS_API_KEY` | Generation | API key for Cerebras inference |
-| `HF_TOKEN` | DPO push | HuggingFace write token |
-| `GOOGLE_DRIVE_CREDENTIALS` | Drive workflow | Service account JSON |
+This saves the native adapter and report under `reviews/adapter-RUN/`. Next, choose **compare-adapter** in Action 1, enter the **training run number** in **dpo_run**, reuse the **key ID**, and pick a film outside the training rows and earlier probes. Import the result with `python scripts/review_cycle.py fetch COMPARISON_RUN --key .private/dpo.pem`. A/B assignment is made once on import and survives app restarts. Save the artifacts locally before GitHub retention expires.
+
+## Words, tools and feedback
+
+- **Word structures.** The active file is the private [2025 word_structures.py at the pinned commit](https://github.com/patruff/chuck2025/blob/783c52912c0be25ccc27fbca768548c46c977a29/word_structures.py). The [bank loader](pipeline/march_source.py) verifies its SHA-256 and reads the literal `funny_words` and `custom_phones` assignments. For local runs, use an adjacent `chuck2025` checkout or pass `--march-word-bank /path/to/word_structures.py` to the RunPod launcher. Actions use the repository secret `CHUCKLES_2025_BANK_GZ` (base64 of the gzipped pinned file).
+- **smolagents.** Both paths load the pinned Hugging Face tools [parody-suggestions](https://huggingface.co/spaces/patruff/parody-suggestions/tree/8147e43f9acfb3af5123fd6fd329c112d8ff7a6b) and [word-phone](https://huggingface.co/spaces/patruff/word-phone/tree/044bccae4f60f213a2246e69c03558a52c6525ff). Suggestions are looked up before drafting. The [RunPod CodeAgent](pipeline/generate_march.py) calls `record_drafts` and executes `word_phone_tool` on its nominees; the [CPU runner](pipeline/blind_film_run.py) calls the same tools between model drafting and selection. Both retain the model’s returned thinking and real observations. [Colab reference](notebooks/Chuckles_RunPod.ipynb)
+- **Judging.** One good change can carry the title. A listed word and an invented word compete on the same terms. Check the exact spellings, then let the model choose by audience fit among titles clearing the inclusive March suggestion-score floor of 0.60. The separate word-phone score is displayed alongside it. If revised nominees all miss, the checked fallback is marked below floor.
+- **Human guidance.** The kickoff prompt includes selected human judgments and distinguishes a weak winner from a good joke. In **runpod** mode an optional tracked [guidance text file](guidance/human-feedback.txt) lets Qwen propose a creative addendum. The artifact records the applied revision and a `next-feedback.txt` for the next round.
+- **Secrets.** RunPod uses `RUNPOD_API_KEY` and tears down each rented pod in the launcher's cleanup path. Training preparation sets `CHUCKLES_DPO_ID` (the compressed request) and `CHUCKLES_DPO_KEY_ID` (recipient key), with ID replaced by the printed suffix. Delete the request secret after training. Keep the recipient key for comparisons and local decryption. The full review export, local comparison bundles and private key do not need to be published.

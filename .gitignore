@@ -17,3 +17,10 @@ build/
 /reviews/.pending-film-preferences.jsonl
 
 /reviews/blind-27b-15/
+
+/reviews/inference-*/
+/reviews/adapter-*/
+/.private/
+*.pem
+
+.DS_Store

@@ -38,7 +38,7 @@ def test_resume_keeps_successful_samples_and_retries_only_the_missing_side(
     assert [v.args[1] for v in generate.call_args_list] == [1042, 1542, 1543, 1544]
 
 
-def test_qwen_recovery_selects_only_a_verified_eligible_suggestion():
+def test_qwen_recovery_can_choose_a_funnier_verified_off_list_swap():
     from types import SimpleNamespace
     from film_selection import checked_options, finish_sample
 
@@ -82,10 +82,11 @@ def test_qwen_recovery_selects_only_a_verified_eligible_suggestion():
         ],
     }
     opts, _ = checked_options(row)
-    assert [o["winner"] for o in opts] == ["Pork"]
+    assert [o["winner"] for o in opts] == ["Pork", "Lark"]
+    assert [o["winner"] for o in checked_options(row, require_suggestion=True)[0]] == ["Pork"]
     model = Mock()
     model.generate.return_value = SimpleNamespace(
-        content='{"choice":0,"explanation":"The stronger joke."}',
+        content='{"choice":1,"explanation":"The stronger joke."}',
         raw=SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -98,9 +99,9 @@ def test_qwen_recovery_selects_only_a_verified_eligible_suggestion():
         ),
     )
     out = finish_sample(
-        row, model, {"applied_instructions": "creative direction"}, 10044
+        row, model, {"applied_instructions": "creative direction", "selection_policy":"humor-first-v2"}, 10044
     )
-    assert out["qualifying_parody"] == "Pork" and out["runner_up"] == "Lark"
+    assert out["qualifying_parody"] == "Lark" and out["runner_up"] == "Pork"
     assert (
         out["recovery"]["agent_state"] == "max_steps_error"
         and out["selected_draft_round"] == 1

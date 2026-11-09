@@ -1,4 +1,4 @@
-name: paired-film-review
+name: 3. RunPod bulk generation and resume
 on:
   workflow_dispatch:
     inputs:
@@ -18,8 +18,8 @@ on:
         type: boolean
         default: false
       prompt_snapshot:
-        description: Committed results directory containing matching guidance.txt and prompt-revision.json
-        default: results/film-adult-premises
+        description: Leave blank for the live audience prompt; use a historical results directory to resume its checkpoints
+        default: ''
         type: string
       ranks:
         description: Optional JSON array of specific MovieLens ranks (with shards set to [0])
@@ -40,7 +40,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: '1'
       SHARD: ${{ matrix.shard }}
-      SNAPSHOT: ${{ inputs.prompt_snapshot || 'results/film-adult-premises' }}
+      SNAPSHOT: ${{ inputs.prompt_snapshot }}
       USE_SAVED_SIDES: ${{ inputs.use_saved_sides }}
       SPECIAL_RANKS: ${{ inputs.ranks || '[]' }}
       SHARDS: ${{ inputs.shards }}
@@ -61,10 +61,18 @@ jobs:
           path: restored
       - name: Select films and prepare checkpoints
         run: |
-          for file in "$SNAPSHOT/guidance.txt" "$SNAPSHOT/prompt-revision.json"; do
-            [[ "$(realpath -e -- "$file")" == "$GITHUB_WORKSPACE"/results/* ]]
-            git --literal-pathspecs ls-files --error-unmatch -- "$file"
-          done
+          if [[ -n "$SNAPSHOT" ]]; then
+            for file in "$SNAPSHOT/guidance.txt" "$SNAPSHOT/prompt-revision.json"; do
+              [[ "$(realpath -e -- "$file")" == "$GITHUB_WORKSPACE"/results/* ]]
+              git --literal-pathspecs ls-files --error-unmatch -- "$file"
+            done
+          else
+            SNAPSHOT=out/current-prompt
+            mkdir -p "$SNAPSHOT"
+            PYTHONPATH=pipeline python -c 'import json; from pathlib import Path; from settings import live_revision; Path("out/current-prompt/prompt-revision.json").write_text(json.dumps(live_revision(),ensure_ascii=False,indent=2)+"\n")'
+            export SNAPSHOT
+            echo "SNAPSHOT=$SNAPSHOT" >> "$GITHUB_ENV"
+          fi
           mkdir -p out/samples
           python - <<'PY'
           import csv,gzip,json,os,shutil,sys
@@ -113,7 +121,9 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           SLOTS: ${{ inputs.slots }}
         run: |
-          python pipeline/run_gguf_test.py --human-guidance "$SNAPSHOT/guidance.txt" \
+          options=()
+          if [[ -f "$SNAPSHOT/guidance.txt" ]]; then options+=(--human-guidance "$SNAPSHOT/guidance.txt"); fi
+          python pipeline/run_gguf_test.py "${options[@]}" \
             --pair-revision "$SNAPSHOT/prompt-revision.json" \
             --slots "$SLOTS" --titles out/films.csv --output-dir out/run --checkpoints out/samples \
             --gpu 'NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition,NVIDIA RTX PRO 5000 Blackwell,NVIDIA RTX 6000 Ada Generation,NVIDIA L40S,NVIDIA L40,NVIDIA RTX A6000,NVIDIA A40' --timeout-mins 310

@@ -22,19 +22,11 @@ from generate_march import (
     suggestions_for,
 )
 from march_source import BANK_SHA256, snapshot_bank
-from run_gguf_test import MODEL, REVISION
+from settings import MODEL, REVISION, SHA256 as BASE_SHA, POLICY, system_prompt
 
 ROOT = Path(__file__).resolve().parents[1]
 RANKS = [2, 5, 18, 23, 35, 36, 44, 51, 55, 61, 72, 76, 77, 80, 98]
-ADAPTER_SHA = "ec6f81c028db8230f57b5617abd37d0da75a169579392a611a6cc022edf96806"
-BASE_SHA = "9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61"
 SERVER = "http://127.0.0.1:8080"
-SYSTEM = json.loads(
-    (ROOT / "results/film-adult-premises/prompt-revision.json").read_text()
-)["applied_instructions"] + (
-    "\nUse intelligible wordplay. Aim the sting at consenting adults or powerful people behaving badly. "
-    "Keep children, sexual coercion and slurs directed at protected groups out of the jokes and drafts."
-)
 
 
 def object_schema(properties):
@@ -56,7 +48,7 @@ def request_step(messages, seed, scale, schema, limit):
     body = dict(
         messages=messages,
         model="film-review",
-        lora=[{"id": 0, "scale": scale}],
+        lora=[{"id": 0, "scale": scale}] if scale else [],
         **settings,
     )
     if schema:
@@ -157,7 +149,17 @@ def model_call(messages, seed, scale, schema=None):
     raise ValueError("Model did not return a complete reply after three attempts")
 
 
-def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
+def run_film(
+    film,
+    scale,
+    prepared,
+    suggester,
+    analyzer,
+    phones,
+    directory,
+    adapter_sha,
+    instructions,
+):
     title, rank = film["title"], int(film["rank"])
     seed = 97031 + rank
     checkpoint = directory / f"{rank:03}-{scale}.json.gz"
@@ -167,12 +169,13 @@ def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
         if (
             previous["film"] != film
             or previous["adapter_scale"] != scale
-            or previous["adapter_sha256"] != ADAPTER_SHA
+            or previous["adapter_sha256"] != adapter_sha
             or previous["base_sha256"] != BASE_SHA
+            or previous["row"].get("selection_policy") != POLICY
             or previous["row"]["seed"] != seed
             or previous["row"]["suggested_words"] != prepared[0]
             or previous["row"]["applied_instructions_sha256"]
-            != hashlib.sha256(SYSTEM.encode()).hexdigest()
+            != hashlib.sha256(instructions.encode()).hexdigest()
             or previous["row"]["state"] != "success"
         ):
             raise ValueError(
@@ -181,12 +184,12 @@ def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
         return
     suggested, raw = prepared
     messages = [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": instructions},
         {
             "role": "user",
             "content": f"Movie: {title}\nSuggested replacements (March scores): {json.dumps(suggested, ensure_ascii=False)}\n"
             "Pitch two funny, different parody titles. Match the original word count and align each swap "
-            "to its source word. Try at least one supplied change. In idea, briefly explain the competing "
+            "to its source word. A single good swap is enough. Use supplied words only when they improve the joke. In idea, briefly explain the competing "
             "jokes and why one might work better. Give the titles alone in first and second.",
         },
     ]
@@ -196,33 +199,16 @@ def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
         {k: {"type": "string"} for k in ("first", "second", "idea")}
     )
     originals = title.split()
-    # Each fallback option contains a genuine non-identity suggestion at one word position.
-    single_swaps = []
-    for i, original in enumerate(originals):
-        for v in suggested[clean_word(original)]:
-            if clean_word(original) != clean_word(v["word"]):
-                single_swaps.append(
-                    " ".join(originals[:i] + [v["word"].title()] + originals[i + 1 :])
-                )
-    if not single_swaps:
-        raise ValueError("Blind slate requires at least one suggested change")
     for round_number in (1, 2):
         if round_number == 2:
             messages = messages + [
                 {
                     "role": "user",
-                    "content": "The first slate had no verified qualifying title. "
-                    "Pick at least one of these actual one-swap titles. Keep the other pitch original if you prefer.\n"
-                    + json.dumps(single_swaps, ensure_ascii=False),
+                    "content": "Revise the pitches. Give two distinct, recognizable titles, including an off-list swap if it is funnier. "
+                    "These are the actual checks from the first round: "
+                    + json.dumps(checks, ensure_ascii=False),
                 }
             ]
-            draft_schema = object_schema(
-                {
-                    "first": {"type": "string", "enum": single_swaps},
-                    "second": {"type": "string"},
-                    "idea": {"type": "string"},
-                }
-            )
         step = model_call(messages, seed, scale, draft_schema)
         draft = json.loads(step["model_output"])
         step.update(kind="Draft titles", step=len(steps) + 1)
@@ -265,19 +251,13 @@ def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
             for k, v in checks.items()
             if all(p.get("score") is not None and p["score"] >= 0.6 for p in v)
         ]
-        if valid:
+        if valid and len(checks) >= 2:
             break
-    if not valid:
-        raise ValueError("No checked, above-floor candidate")
-    listed = {(w, v["word"]) for w, group in suggested.items() for v in group}
-    preferred = [
-        k
-        for k in valid
-        if any(
-            clean_word(a) != clean_word(b) and (clean_word(a), clean_word(b)) in listed
-            for a, b in zip(originals, k.split())
+    if not checks or (adapter_sha is None and len(checks) < 2):
+        raise ValueError(
+            "The model did not supply the checked nominees needed for review"
         )
-    ] or valid
+    preferred = valid or list(checks)
     menu = {
         k: [
             {
@@ -303,7 +283,12 @@ def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
             + json.dumps(menu, ensure_ascii=False)
             + "\nChoose the funniest eligible title from "
             + json.dumps(preferred)
-            + ". Give one concise sentence explaining the title’s joke and your choice.",
+            + (
+                ". All nominees miss the 0.60 floor; identify the winner as a fallback."
+                if not valid
+                else "."
+            )
+            + " Give one concise sentence explaining the title’s double meaning for this audience.",
         },
     ]
     final = model_call(
@@ -333,18 +318,23 @@ def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
         attempts=attempts,
         parody=winner,
         explanation=decision["why"],
-        qualifying_parody=winner,
-        passes_threshold=True,
+        runner_up=next((t for t in checks if t != winner), None),
+        trace_format="native-tools",
+        selection_policy=POLICY,
+        audience_prompt=instructions,
+        qualifying_parody=winner if winner in valid else None,
+        fallback=winner if winner not in valid else None,
+        passes_threshold=winner in valid,
         state="success",
         tool_revisions=RUNNING_MAN_TOOLS,
-        applied_instructions_sha256=hashlib.sha256(SYSTEM.encode()).hexdigest(),
+        applied_instructions_sha256=hashlib.sha256(instructions.encode()).hexdigest(),
     )
     result = dict(
         film=film,
         row=row,
         variant="adapter" if scale else "original",
         adapter_scale=scale,
-        adapter_sha256=ADAPTER_SHA,
+        adapter_sha256=adapter_sha,
         base_sha256=BASE_SHA,
         model_revision=REVISION,
         bank_sha256=BANK_SHA256,
@@ -355,7 +345,9 @@ def run_film(film, scale, prepared, suggester, analyzer, phones, directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--shard", type=int, choices=range(5), required=True)
+    parser.add_argument(
+        "--shard", type=int, choices=range(5), help="Historical blind-study shard"
+    )
     parser.add_argument(
         "--rank",
         type=int,
@@ -363,20 +355,31 @@ def main():
         help="Run one MovieLens film; additional held-out films use shard 0",
     )
     parser.add_argument("--work", type=Path, required=True)
-    parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument(
+        "--report", type=Path, help="Verified DPO report; omit for base-only inference"
+    )
     args = parser.parse_args()
     out = args.work / "samples"
     out.mkdir(parents=True, exist_ok=True)
-    report = json.loads(args.report.read_text())
-    assert (
-        report["adapter_sha256"] == ADAPTER_SHA
-        and report["base_weight_sha256"] == BASE_SHA
-    )
-    excluded = {p["film"]["title"].casefold() for p in report["preferences"]} | {
-        p["film"].casefold() for p in report["generations"]
-    }
-    ranks = RANKS[args.shard :: 5]
-    if args.rank is not None:
+    instructions = system_prompt()
+    adapter_sha = None
+    excluded = set()
+    if args.report:
+        report = json.loads(args.report.read_text())
+        if (report["model"], report["revision"], report["base_weight_sha256"]) != (
+            MODEL,
+            REVISION,
+            BASE_SHA,
+        ):
+            parser.error("The DPO adapter was trained on a different base")
+        adapter_sha = report["adapter_sha256"]
+        excluded = {p["film"]["title"].casefold() for p in report["preferences"]} | {
+            p["film"].casefold() for p in report["generations"]
+        }
+    if args.rank is None and args.shard is None:
+        parser.error("Specify a MovieLens rank or historical shard")
+    ranks = RANKS[args.shard :: 5] if args.shard is not None else [args.rank]
+    if args.rank is not None and args.shard is not None:
         if args.rank in RANKS and args.rank not in ranks:
             parser.error("The requested study rank is not in this shard")
         if args.rank not in RANKS and args.shard != 0:
@@ -415,19 +418,33 @@ def main():
     else:
         raise RuntimeError("Native server did not become ready")
     available = requests.get(SERVER + "/lora-adapters", timeout=12).json()
-    assert len(available) == 1 and available[0]["id"] == 0
+    if adapter_sha and not (len(available) == 1 and available[0]["id"] == 0):
+        raise ValueError("The expected adapter is not loaded")
+    if not adapter_sha and available:
+        raise ValueError("Base inference requires an adapter-free server")
     failures = []
-    for scale in (0, 1):
+    scales = (0, 1) if adapter_sha else (0,)
+    for scale in scales:
         # Set the global configuration too; every inference request also specifies its own scale.
-        requests.post(
-            SERVER + "/lora-adapters", json=[{"id": 0, "scale": scale}], timeout=30
-        ).raise_for_status()
-        got = requests.get(SERVER + "/lora-adapters", timeout=30).json()
-        assert got[0]["scale"] == scale
+        if adapter_sha:
+            requests.post(
+                SERVER + "/lora-adapters", json=[{"id": 0, "scale": scale}], timeout=30
+            ).raise_for_status()
+            got = requests.get(SERVER + "/lora-adapters", timeout=30).json()
+            assert got[0]["scale"] == scale
         with ThreadPoolExecutor(max_workers=len(films)) as pool:
             tasks = [
                 pool.submit(
-                    run_film, f, scale, prepared[f["rank"]], sg, az, phones, out
+                    run_film,
+                    f,
+                    scale,
+                    prepared[f["rank"]],
+                    sg,
+                    az,
+                    phones,
+                    out,
+                    adapter_sha,
+                    instructions,
                 )
                 for f in films
             ]
@@ -441,7 +458,15 @@ def main():
     if failures:
         raise RuntimeError(f"Unfinished film trajectories: {failures}")
 
-    assert len(list(out.glob("*.json.gz"))) == 2 * len(films)
+    assert len(list(out.glob("*.json.gz"))) == len(scales) * len(films)
+    if not adapter_sha:
+        with (args.work / "results.jsonl").open("w", encoding="utf-8") as output:
+            for film in films:
+                with gzip.open(
+                    out / f"{int(film['rank']):03}-0.json.gz", "rt", encoding="utf-8"
+                ) as f:
+                    json.dump(json.load(f)["row"], output, ensure_ascii=False)
+                    output.write("\n")
 
 
 if __name__ == "__main__":

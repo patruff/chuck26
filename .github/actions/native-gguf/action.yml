@@ -1,0 +1,36 @@
+name: Prepare pinned GGUF runtime
+description: Build the native server or training driver and verify the model file
+inputs:
+  target:
+    description: server or dpo
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        pip install -q PyYAML
+        python -m pipeline.settings model-env >> "$GITHUB_ENV"
+    - shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        set -euo pipefail
+        target="$RUNNER_TEMP/chuckles"
+        mkdir -p "$target"/{assets,result,llama}
+        cd "$target"
+        if [ "$(df --output=avail -B1 . | tail -1)" -lt 26000000000 ]; then sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc; fi
+        curl -fsSL --retry 4 "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/$LLAMA_REV" | tar xz -C llama --strip-components=1
+        case "$TARGET" in server) server=ON; build_target=llama-server;; dpo) server=OFF; build_target=llama;; *) exit 2;; esac
+        cmake -S llama -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_CCACHE=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER="$server"
+        cmake --build build -j 4 --target "$build_target" > build.log 2>&1 || { tail -60 build.log; exit 1; }
+        root="https://huggingface.co/$MODEL_NAME/resolve/$HF_REV"
+        curl -fsSL --retry 4 "$root/$MODEL_FILE" -o model.gguf
+        echo "$WEIGHT_SHA  model.gguf" | sha256sum -c -
+        if [[ "$TARGET" == dpo ]]; then
+          c++ -std=c++17 -O2 "$GITHUB_WORKSPACE/training/gguf_dpo/forward.cpp" -I llama/include -I llama/ggml/include -L build/bin -Wl,-rpath,"$PWD/build/bin" -lllama -o forward
+          pip install -q ./llama/gguf-py 'tokenizers>=0.21,<0.24' jinja2 cryptography
+          pip install -q --index-url https://download.pytorch.org/whl/cpu torch==2.8.0
+          curl -fsSL --retry 4 "$root/GSQ-3bit/tokenizer.json" -o assets/tokenizer.json
+          curl -fsSL --retry 4 "$root/chat_template.jinja" -o assets/chat_template.jinja
+        fi

@@ -14,15 +14,16 @@ class RecordDrafts(Tool):
         "attempts": {"type": "array", "description": "List of dicts with title, humor (0–10), and why."},
         "finalists": {"type": "array", "description": "Two distinct titles from attempts, funniest first."},
         "skip_reason": {"type": "string", "nullable": True, "description":
-                        "Only if no supplied swap makes a joke: name a returned word and explain what fails."},
+                        "Optional comment on why a suggestion fell flat."},
     }
     output_type = "object"
 
-    def __init__(self, original, calls, listed=()):
+    def __init__(self, original, calls, listed=(), *, require_suggestion=False):
         super().__init__()
         self.original = original
         self.calls = calls
         self.listed = set(listed)
+        self.require_suggestion = require_suggestion
         self.rounds = []
 
     def forward(self, attempts: list, finalists: list, skip_reason: str | None = None) -> dict:
@@ -49,14 +50,14 @@ class RecordDrafts(Tool):
         aligned = [t for t in titles if len(t.split()) == len(self.original.split())]
         in_list = [t for t in aligned if self.listed.intersection(title_changes(self.original, t))]
         listed_finalists = [t for t in finalists if t in in_list]
-        if self.listed and not listed_finalists:
+        if self.require_suggestion and self.listed and not listed_finalists:
             cited = set(re.findall(r"[\w'-]+", (skip_reason or "").casefold()))
             if not cited.intersection(b for _, b in self.listed) or not skip_reason.strip():
                 raise ValueError("Pitch and nominate a returned swap for its own original word. If none makes a "
                                  "joke, pass skip_reason naming a real suggestion and why it falls flat.")
         # Reserve one finalist slot for the funniest supplied-word pitch. Rank the other slot on humor.
         pool, open_slots = aligned, finalists
-        if listed_finalists:
+        if self.require_suggestion and listed_finalists:
             best = max(listed_finalists, key=ratings.get)
             if ratings[best] < max(ratings[t] for t in in_list):
                 raise ValueError("Nominate your highest-rated pitch using a returned suggestion.")

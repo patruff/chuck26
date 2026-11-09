@@ -16,14 +16,13 @@ def test_list_membership_is_per_original_word_and_selection_is_humor_first():
     slate = RecordDrafts("Toy Story", [], listed)
     drafts = [{"title": t, "why": "a different comic premise", "humor": score} for t, score in
               [("Boy Story", 7), ("Toy Gory", 10), ("Toy Boy", 9), ("Toy Gore", 6)]]
+    slate.forward(drafts, ["Toy Gory", "Toy Boy"])
+    assert slate.rounds[0]["suggested_finalists"] == []
+    with pytest.raises(ValueError, match="two funniest"):
+        slate.forward(drafts, ["Boy Story", "Toy Gory"])
+    historical = RecordDrafts("Toy Story", [], listed, require_suggestion=True)
     with pytest.raises(ValueError, match="returned swap"):
-        slate.forward(drafts, ["Toy Gory", "Toy Boy"])
-    with pytest.raises(ValueError, match="returned swap"):
-        slate.forward(drafts, ["Toy Gory", "Toy Boy"], "Nothing sounded good.")
-    slate.forward(drafts, ["Boy Story", "Toy Gory"])
-    assert slate.rounds[-1]["suggested_finalists"] == ["Boy Story"]
-    slate.forward(drafts, ["Toy Gory", "Toy Boy"], "Boy merely renames the character; there is no gag.")
-    assert slate.rounds[-1]["skip_reason"].startswith("Boy")
+        historical.forward(drafts, ["Toy Gory","Toy Boy"])
     assert bank_use({"input_title":"Toy Story","suggestion_tool_results":raw}, "Toy Boy") == [("story","boy",False)]
 
 

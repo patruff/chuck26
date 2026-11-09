@@ -1,39 +1,23 @@
 [build-system]
-requires = ["setuptools>=68.0", "setuptools-scm"]
+requires = ["setuptools>=68,<81"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "chucklesPRIME"
-version = "0.1.0"
-description = "Phonetically-sound parody title generator with RLVR dataset output"
+version = "0.2.0"
+description = "Phonetically checked movie parodies, human review and 27B DPO"
 requires-python = ">=3.10"
 dependencies = [
-    "smolagents>=1.24.0",
-    "openai>=1.0.0",
-    "requests>=2.28",
-    "rich",
-    "pronouncing",
-    "datasets>=3.0.0",
-    "huggingface-hub>=0.20.0",
-    "flask>=3.0.0",
+    "smolagents==1.24.0", "huggingface-hub==0.36.0", "openai>=1", "requests>=2.28",
+    "cryptography>=43", "pronouncing", "setuptools<81", "Flask>=3", "PyYAML>=6"
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 trace-export = ["tokenizers>=0.21"]
-drive = [
-    "google-api-python-client",
-    "google-auth-httplib2",
-    "google-auth-oauthlib",
-]
 
-[project.scripts]
-chuckles = "chuckles_prime.cli:main"
+[tool.setuptools]
+packages = []
 
 [tool.pytest.ini_options]
-markers = [
-    "integration: marks tests that require live API credentials (deselect with '-k not integration')",
-]
-
-[tool.setuptools.packages.find]
-where = ["src"]
+markers = ["integration: requires external credentials or services"]

@@ -9,8 +9,8 @@ from pathlib import Path
 import re
 
 from common import MIN_PHONETIC_SCORE, align_swaps, clean_word, compact_suggestions
-from generate_with_reasoning import read_titles
-from chuckles_prime.tools import load_parody_tools
+from common import read_titles
+from settings import POLICY, live_revision
 from smolagents import ActionStep, CodeAgent, OpenAIModel, Tool, load_tool
 from smolagents.monitoring import LogLevel
 from humor_batch import RecordDrafts, clears_phonetic_floor, suggested_pairs, title_changes
@@ -195,11 +195,12 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
               suggester=None, previous_drafts=None, revision=None):
     if humor_first and suggester is None:
         raise ValueError("The humor-first floor requires the archived parody-suggestions tool")
+    current_policy = revision is None or revision.get("selection_policy") == POLICY
     phone = WordPhoneTool(analyzer, phones, suggester if humor_first else None)
     agent_tools = [phone]
     if humor_first:
         listed = suggested_pairs(suggested) if not previous_drafts else set()
-        phone.drafts = RecordDrafts(title, phone.calls, listed)
+        phone.drafts = RecordDrafts(title, phone.calls, listed, require_suggestion=not current_policy)
         agent_tools.append(phone.drafts)
         record["draft_rounds"] = phone.drafts.rounds
         if previous_drafts:
@@ -292,7 +293,7 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
                     return clears_phonetic_floor(original, [clean_word(w) for w in t.split()], observed, MIN_PHONETIC_SCORE)
                 eligible = {t for s in phone.drafts.rounds for t in s["finalists"] if passes(t)}
                 banked = {t for t in eligible if listed.intersection(title_changes(title, t))}
-                if banked and result["winner"] not in banked:
+                if not current_policy and banked and result["winner"] not in banked:
                     raise ValueError(f"A suggested-word finalist clears 0.60: {sorted(banked)}. Choose one with "
                                      "its recorded runner-up from the same round, or pitch and verify a better one.")
                 if not passes(result["winner"]):
@@ -333,7 +334,17 @@ After checking the words, call final_answer with a dictionary in this shape:
         task = reference_prompt
         if humor_first:
             task = task.replace("scores > 0.8", "scores >= 0.6").replace("scores > 0.6", "scores >= 0.6")
-            task += """
+            if current_policy:
+                task += """
+First call record_drafts with three or four genuinely different pitches (title, humor from 0 to 10, why)
+and your two funniest word-aligned finalists. For each word in both finalists print
+word_phone_tool(word=original, compare_to=replacement). Read the observations on the next step.
+Choose by humor among the titles that clear 0.60 on every changed word. An off-list punchline can win.
+If both miss, revise the jokes and check a second distinct pair. If none qualifies, clearly identify a fallback.
+Use final_answer({"winner":..., "runner_up":..., "explanation":...}) with a checked pair from the same round.
+Explain what the winning phrase means to this audience. Use the reasoning channel for deliberation."""
+            else:
+                task += """
 
 Working with CodeAgent:
 First call record_drafts(attempts, finalists) with three or four dicts {"title": ..., "humor": 8, "why": ...}
@@ -463,8 +474,12 @@ def generate_title(title, seed, *, model, words, phones, cutoff, revisions, sugg
         if notebook:
             row["reference_cell"] = HUMOR_BATCH_CELL if humor_first else RUNNING_MAN_CELL
             prompt_suggestions = row["suggested_words"] if humor_first else suggested
-            prompt = running_man_prompt(notebook, title,
-                                        {w: prompt_suggestions[clean_word(w)] for w in title.split()}, row["reference_cell"])
+            if humor_first and (revision is None or revision.get("selection_policy") == POLICY):
+                prompt = f"Movie: {title}\nSuggested replacements (March scores): {json.dumps(prompt_suggestions, ensure_ascii=False)}"
+                row["audience_prompt"] = revision["applied_instructions"] if revision else BASE_INSTRUCTIONS
+            else:
+                prompt = running_man_prompt(notebook, title,
+                                            {w: prompt_suggestions[clean_word(w)] for w in title.split()}, row["reference_cell"])
         if extra_task and prompt:
             prompt += "\n\n" + extra_task
         prior = previous.get(title)
@@ -490,6 +505,7 @@ def main():
     parser.add_argument("--example-notebook", type=Path, help="Running Man notebook, used with --word-bank")
     parser.add_argument("--humor-first", action="store_true")
     parser.add_argument("--drafts-from", type=Path, help="Reuse pre-check creative slates where present")
+    parser.add_argument("--applied-revision", type=Path, help="Use this exact frozen audience prompt")
     parser.add_argument("--guidance-plan", type=Path, help="Prepared human feedback from the RunPod launcher")
     parser.add_argument("--limit", type=int, required=True)
     args = parser.parse_args()
@@ -525,11 +541,11 @@ def main():
     if args.colab_notebook or args.example_notebook:
         suggester, analyzer = [load_tool(repo, revision=rev, trust_remote_code=True) for repo, rev in revisions.items()]
     else:
-        suggester, analyzer = load_parody_tools()
+        suggester, analyzer = [load_tool(repo, revision=sha, trust_remote_code=True) for repo, sha in RUNNING_MAN_TOOLS.items()]
     model = make_model(args.base_model, args.llama_server)
 
     output_dir = Path(args.output).parent
-    revision = None
+    revision = json.loads(args.applied_revision.read_bytes()) if args.applied_revision else live_revision()
     if args.guidance_plan:
         plan = json.loads(args.guidance_plan.read_text(encoding="utf-8"))
         revision = revise_prompt(model, plan)
@@ -559,7 +575,7 @@ def main():
             print(f"{title} → {label}", flush=True)
     if args.humor_first:
         write_transcripts(Path(args.output), output_dir)
-    if revision:
+    if args.guidance_plan:
         write_next_feedback(output_dir, revision)
     if failed:
         raise SystemExit("One or more CodeAgent runs failed; inspect results.jsonl")

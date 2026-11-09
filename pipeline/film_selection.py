@@ -2,11 +2,12 @@
 
 import json
 
+from settings import POLICY
 from common import MIN_PHONETIC_SCORE, clean_word, suggested_pairs, title_changes
 from generate_march import parse_answer, store_checked_answer
 
 
-def checked_options(row):
+def checked_options(row, *, require_suggestion=False):
     title = row["input_title"]
     observed = {
         (c["word"], c["compare_to"]): c
@@ -31,10 +32,10 @@ def checked_options(row):
         if title_changes(title, t)
         and all(c["score"] is not None and c["score"] >= MIN_PHONETIC_SCORE for c in cs)
     }
-    listed = suggested_pairs(row.get("suggestion_tool_results", {}))
-    eligible = {
-        t for t in passed if listed.intersection(title_changes(title, t))
-    } or passed
+    eligible = passed
+    if require_suggestion:
+        listed = suggested_pairs(row.get("suggestion_tool_results", {}))
+        eligible = {t for t in passed if listed.intersection(title_changes(title, t))} or passed
     complete = [s for s in slates if all(t in checks for t in s["finalists"])]
     if not eligible and len({frozenset(s["finalists"]) for s in complete}) < 2:
         return [], observed
@@ -73,7 +74,7 @@ def checked_options(row):
 
 def finish_sample(row, model, revision, seed):
     """Make a new recorded decision call. Never assign a winner to an incomplete slate in Python."""
-    options, observed = checked_options(row)
+    options, observed = checked_options(row, require_suggestion=revision.get("selection_policy") != POLICY)
     if not options or not any(s.get("reasoning") for s in row.get("steps", [])):
         return None
     menu = [

@@ -20,9 +20,9 @@ sys.path.insert(0, str(ROOT / "pipeline"))
 from trace_review import transcript
 
 if __package__:
-    from .blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs
+    from .blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs, blind_transcript
 else:
-    from blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs
+    from blind_reviews import COLLECTION as BLIND_COLLECTION, load_blind_pairs, blind_transcript
 
 DEFAULT_SOURCES = [
     ROOT / "results" / "movielens-200" / "samples",
@@ -105,7 +105,7 @@ def review_pair(film, first, second, collection):
         ),
     )
     prompt = [
-        {"role": "system", "content": PROMPT},
+        {"role": "system", "content": ra.get("audience_prompt", PROMPT)},
         {
             "role": "user",
             "content": "Movie: "
@@ -128,7 +128,7 @@ def review_pair(film, first, second, collection):
                     word: {item["word"] for item in candidates}
                     for word, candidates in row.get("suggested_words", {}).items()
                 },
-                "trace": transcript(row),
+                "trace": blind_transcript(row) if row.get("trace_format")=="native-tools" else transcript(row),
                 "source": location(file),
                 "sha256": digest,
                 "seed": row.get("seed"),
@@ -596,13 +596,13 @@ def main():
 
     def refresh():
         nonlocal stamp
-        current = tuple(
-            path.stat().st_mtime_ns if path.exists() else None for path in sources
-        )
+        active_sources = sources if args.input else [*sources, *sorted((ROOT/"reviews").glob("inference-*"))]
+        current = tuple((str(path),path.stat().st_mtime_ns if path.exists() else None) for path in active_sources)
+
         if current == stamp:
             return None
         items = [
-            item for path in sources if path.exists() for item in load_source(path)
+            item for path in active_sources if path.exists() for item in load_source(path)
         ]
         stamp = current
         return items

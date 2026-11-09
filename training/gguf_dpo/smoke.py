@@ -13,9 +13,7 @@ import torch.nn.functional as F
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 from tokenizers import Tokenizer
 
-MODEL = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF"
-REVISION = "ab8d7bd81d03117501e4da60cccdff4c80f0eea0"
-WEIGHT_SHA = "9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61"
+from pipeline.settings import MODEL, REVISION, SHA256 as WEIGHT_SHA
 
 
 def prepare(data, assets, folder):

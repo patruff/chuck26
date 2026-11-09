@@ -187,11 +187,11 @@ def load_blind_pairs(directory, prompt_system, location):
             id=pair_id,
             film=film,
             sides=sides,
-            collection=COLLECTION,
+            collection=directory.name,
             shared_trace=False,
             blind=True,
             prompt=[
-                {"role": "system", "content": prompt_system},
+                {"role": "system", "content": rows[0].get("audience_prompt",prompt_system)},
                 {
                     "role": "user",
                     "content": "Movie: "

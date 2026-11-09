@@ -1,42 +1,17 @@
-"""Shared helpers for the reasoning SFT pipeline.
-
-The prompt built here is used by BOTH build_reasoning_dataset.py (training
-data) and generate_with_reasoning.py (inference), so the model always sees
-tool-computed suggestions in the same format it was trained on.
-
-Pure-python helpers (word alignment, alpaca parsing, think-block parsing)
-live here too so they can be unit-tested without smolagents or a GPU.
-"""
-
-from __future__ import annotations
-
-import json
-import re
+"""Title alignment and the March phonetic score used by both inference paths."""
+import csv
 import string
 from typing import Any
 
-# Threshold used both in reasoning traces and inference-time scoring.
 MIN_PHONETIC_SCORE = 0.6
 
-REASONING_SYSTEM_PROMPT = f"""You are a comedy writer who creates funny parody titles that sound almost identical to the original when spoken aloud but mean something absurd.
 
-SETUP -- two phonetic tools support you:
-- parody_word_suggester: already ran on every word of the title; its ranked funny replacements (with phonetic similarity 0-1) are listed in the user prompt.
-- word_phonetic_analyzer(word=<original>, compare_to=<replacement>): returns a phonetic similarity score 0-1. A swap is phonetically sound when similarity >= {MIN_PHONETIC_SCORE}.
-
-METHOD -- reason inside <think> tags, then answer with ONLY the final parody title:
-1. Shortlist the funniest candidates from the parody_word_suggester output.
-2. Verify every swap you consider with word_phonetic_analyzer and cite its score.
-3. Prefer swaps scoring >= {MIN_PHONETIC_SCORE}. Swap only 1-2 words and keep the rest of the title intact so the original is still recognizable.
-
-EXAMPLE:
-User: Create a phonetically-sound parody of: 'Jurassic Park' (parody_word_suggester: park -> pork 0.85, bark 0.78)
-Assistant: <think>
-parody_word_suggester's top pick for "park" is "pork" (0.85).
-word_phonetic_analyzer(word="park", compare_to="pork") -> similarity 0.85 -- well above {MIN_PHONETIC_SCORE}, and dinosaur pork is absurd.
-Keep "Jurassic" unchanged to anchor the original sound.
-</think>
-Jurassic Pork"""
+def read_titles(csv_path: str) -> list[str]:
+    with open(csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None or "title" not in reader.fieldnames:
+            raise ValueError(f"{csv_path} must have a 'title' column")
+        return [row["title"].strip() for row in reader if row.get("title", "").strip()]
 
 
 def compact_suggestions(
@@ -66,27 +41,6 @@ def compact_suggestions(
             if isinstance(c, dict)
         ]
     return compact
-
-
-def build_user_prompt(title: str, suggestions: dict[str, Any]) -> str:
-    """Build the user prompt with pre-computed tool suggestions injected.
-
-    Args:
-        title: The input title to parody.
-        suggestions: Output of chuckles_prime.tools.pre_compute_suggestions().
-
-    Returns:
-        User prompt string shared by training data and inference.
-    """
-    suggestions_json = json.dumps(suggestions, indent=2)
-    return f"""Create a phonetically-sound parody of: '{title}'
-
-parody_word_suggester output (ranked funny replacements per word, with phonetic similarity):
-{suggestions_json}
-
-Pick replacements from the suggestions above, verify each swap with
-word_phonetic_analyzer (similarity >= {MIN_PHONETIC_SCORE} is acceptable), keep the rest of
-the title intact, and answer with only the parody title."""
 
 
 def clean_word(word: str) -> str:
@@ -129,190 +83,3 @@ def align_swaps(original: str, parody: str) -> list[tuple[str, str]]:
         if ow_c and pw_c and ow_c != pw_c:
             swaps.append((ow_c, pw_c))
     return swaps
-
-
-def split_output_explanation(output: str) -> tuple[str, str]:
-    """Split a 'Parody Title: explanation text' output into its parts.
-
-    Datasets like patruff/chucklesClean2WordsALPACA store the parody and a
-    humor explanation in one field, e.g.
-    'Mozfart: Explanation: Replacing ... Category: juvenile.'
-
-    Returns:
-        (parody, explanation) -- explanation is '' when there is none.
-    """
-    if ":" not in output:
-        return output.strip(), ""
-    parody, _, rest = output.partition(":")
-    rest = rest.strip()
-    if rest.lower().startswith("explanation:"):
-        rest = rest[len("explanation:"):].strip()
-    return parody.strip(), rest
-
-
-def parse_alpaca_text(text: str) -> tuple[str, str] | None:
-    """Parse an alpaca-style row ('### Context:\\n<in>\\n\\n### Response: <out>').
-
-    Used for the patruff/chucklesClean720 source dataset.
-
-    Returns:
-        (input_title, parody_output) or None if the row doesn't parse.
-    """
-    m = re.search(
-        r"### Context:\s*\n(.+?)\n\s*\n### Response:\s*(.+)", text, re.DOTALL
-    )
-    if not m:
-        return None
-    inp = m.group(1).strip()
-    out = m.group(2).strip()
-    if not inp or not out:
-        return None
-    return inp, out
-
-
-def phonetic_similarity(phone_tool: Any, original: str, replacement: str) -> float | None:
-    """Score one word swap with the word_phonetic_analyzer HF tool.
-
-    Args:
-        phone_tool: Loaded patruff/word-phone tool.
-        original: Original word.
-        replacement: Replacement word.
-
-    Returns:
-        Similarity in [0, 1], or None if either word is out-of-dictionary
-        or the tool errors.
-    """
-    try:
-        raw = phone_tool.forward(word=original, compare_to=replacement)
-        data = json.loads(raw)
-    except Exception:
-        return None
-    sim = data.get("similarity")
-    if isinstance(sim, dict):
-        sim = sim.get("similarity")
-    if isinstance(sim, (int, float)):
-        return float(sim)
-    return None
-
-
-def score_parody(
-    phone_tool: Any, original: str, parody: str
-) -> tuple[dict[str, float], float]:
-    """Score every swapped word pair in a parody with the phone tool.
-
-    Args:
-        phone_tool: Loaded patruff/word-phone tool.
-        original: Original title.
-        parody: Generated parody title.
-
-    Returns:
-        (per-swap scores keyed 'orig->repl', average score). Average is 0.0
-        when no swap could be scored.
-    """
-    scores: dict[str, float] = {}
-    for ow, pw in align_swaps(original, parody):
-        sim = phonetic_similarity(phone_tool, ow, pw)
-        if sim is not None:
-            scores[f"{ow}->{pw}"] = sim
-    avg = sum(scores.values()) / len(scores) if scores else 0.0
-    return scores, avg
-
-
-def split_think_answer(generated: str) -> tuple[str, str]:
-    """Split generated text into (reasoning, final answer).
-
-    Handles '<think>...</think>answer', a bare '</think>' (Qwen3 sometimes
-    omits the opening tag), and plain text with no think block.
-    """
-    if "</think>" in generated:
-        think_part, _, answer = generated.rpartition("</think>")
-        think_part = think_part.replace("<think>", "").strip()
-        return think_part, answer.strip()
-    return "", generated.strip()
-
-
-def build_reasoning_trace(
-    title: str,
-    parody: str,
-    suggestions: dict[str, Any],
-    swap_scores: dict[str, float],
-    humor_note: str = "",
-) -> str:
-    """Synthesize a deterministic <think> reasoning trace for an SFT target.
-
-    Walks the tool suggestions and verified swap scores the way the agent
-    would, ending with the known-good parody.
-
-    Args:
-        title: Original title.
-        parody: Human-approved parody (the SFT answer).
-        suggestions: compact_suggestions() output for the title.
-        swap_scores: 'orig->repl' -> similarity for the actual swaps.
-        humor_note: Optional human explanation of why the parody is funny.
-
-    Returns:
-        Full assistant message: '<think>...</think>\\n<parody>'.
-    """
-    lines = [
-        f'I need a parody of "{title}" that sounds nearly identical when '
-        "spoken but means something absurd."
-    ]
-
-    swaps = align_swaps(title, parody)
-    swapped_words = {ow for ow, _ in swaps}
-
-    for word, cands in suggestions.items():
-        word_c = clean_word(word)
-        if len(word) <= 2:
-            continue
-        if cands:
-            top = ", ".join(
-                f"{c['word']} ({c['similarity']})" for c in cands[:4]
-            )
-            lines.append(f'parody_word_suggester found for "{word_c}": {top}.')
-        elif word_c not in swapped_words:
-            lines.append(
-                f'No strong suggestions for "{word_c}" -- keeping it anchors '
-                "the original sound."
-            )
-
-    for ow, pw in swaps:
-        score = swap_scores.get(f"{ow}->{pw}")
-        if score is not None:
-            verdict = (
-                f"above the {MIN_PHONETIC_SCORE} threshold, the swap holds up"
-                if score >= MIN_PHONETIC_SCORE
-                else "below the usual threshold, but the humor carries it"
-            )
-            lines.append(
-                f'word_phonetic_analyzer(word="{ow}", compare_to="{pw}") '
-                f"-> similarity {score} -- {verdict}."
-            )
-        elif ow[1:] == pw[1:]:
-            lines.append(
-                f'Swapping "{ow}" -> "{pw}" changes only the opening sound; '
-                "the rhythm and vowels stay identical."
-            )
-        elif ow[:1] == pw[:1]:
-            lines.append(
-                f'Swapping "{ow}" -> "{pw}" keeps the opening sound and '
-                "overall shape of the word."
-            )
-        else:
-            lines.append(
-                f'Swapping "{ow}" -> "{pw}" mirrors the original\'s '
-                "syllable pattern, so it still scans the same way."
-            )
-
-    if not swaps:
-        lines.append(
-            "The parody keeps the title's phonetic skeleton intact, so it "
-            "reads as the original at first glance."
-        )
-
-    if humor_note:
-        lines.append(f"Why it lands: {humor_note}")
-
-    lines.append(f'Best combination: "{parody}".')
-    think = "\n".join(lines)
-    return f"<think>\n{think}\n</think>\n{parody}"

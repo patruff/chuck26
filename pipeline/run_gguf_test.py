@@ -21,12 +21,8 @@ from march_source import BANK_URL, NOTEBOOK, preflight, snapshot_bank
 from human_guidance import prepare_guidance
 
 PIPELINE = Path(__file__).resolve().parent
-MODEL = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF"
-REVISION = "ab8d7bd81d03117501e4da60cccdff4c80f0eea0"
-FILENAME = "RVN-Q4_K_M-multilingual.gguf"
-SHA256 = "9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61"
-# llama.cpp b12182, CUDA 12.8, linux/amd64.
-IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:859efa314dc34f1843a38ff28a4818aeac51a4cce125bdea4d2678aceba95469"
+from settings import MODEL, REVISION, FILENAME, SHA256, MODEL_CONFIG, live_revision
+IMAGE = MODEL_CONFIG["runpod_image"]
 PODS = "https://rest.runpod.io/v1/pods"
 
 
@@ -110,7 +106,6 @@ def main(private_dir):
                          help="Run CodeAgent with the March word bank and custom pronunciations")
     sources.add_argument("--colab-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
                          help="Run CodeAgent with the Colab funny_words list and 0.8 suggestion cutoff")
-    sources.add_argument("--base-only", action="store_true", help="Use the original single-answer GGUF baseline")
     p.add_argument("--example-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
                    help="With --march-word-bank, replay the saved Running Man cell and both finalists' word checks")
     p.add_argument("--humor-first", action="store_true",
@@ -126,7 +121,7 @@ def main(private_dir):
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="SECURE")
     p.add_argument("--timeout-mins", type=int, default=80)
     args = p.parse_args()
-    production = not (args.base_only or args.colab_notebook)
+    production = not args.colab_notebook
     plan = None
     if args.human_guidance:
         if not production or args.drafts_from:
@@ -134,18 +129,18 @@ def main(private_dir):
         if args.human_guidance.suffix.lower() != ".txt" or not args.human_guidance.is_file():
             p.error("--human-guidance requires an existing UTF-8 .txt file")
         from tokenizers import Tokenizer
-        from export_humor_candidates import pinned_tokenizer_file
+        from huggingface_hub import hf_hub_download
         raw_guidance = args.human_guidance.read_bytes()
         try:
-            plan = prepare_guidance(raw_guidance, Tokenizer.from_file(pinned_tokenizer_file(MODEL, REVISION)))
+            plan = prepare_guidance(raw_guidance, Tokenizer.from_file(hf_hub_download(MODEL, "GSQ-3bit/tokenizer.json", revision=REVISION)))
         except ValueError as exc:
             p.error(str(exc))
         args.humor_first = True
     if args.pair_revision:
-        if not plan or not args.titles or args.slots < 1 or not args.checkpoints:
-            p.error("--pair-revision needs --human-guidance, --titles, --checkpoints and positive --slots")
+        if not args.titles or args.slots < 1 or not args.checkpoints:
+            p.error("--pair-revision needs --titles, --checkpoints and positive --slots")
         frozen = json.loads(args.pair_revision.read_text(encoding="utf-8"))
-        if (frozen.get("feedback_sha256") != plan["feedback_sha256"] or frozen.get("model") != MODEL
+        if ((plan and frozen.get("feedback_sha256") != plan["feedback_sha256"]) or (not plan and frozen != live_revision()) or frozen.get("model") != MODEL
                 or hashlib.sha256(frozen["applied_instructions"].encode()).hexdigest() != frozen.get("applied_instructions_sha256")):
             p.error("The frozen prompt revision does not match the feedback, model or instruction hash")
         with args.titles.open(newline="",encoding="utf-8") as f:
@@ -202,6 +197,8 @@ def main(private_dir):
         (args.output_dir / "editor-input.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.pair_revision:
         (args.output_dir / "prompt-revision.json").write_bytes(args.pair_revision.read_bytes())
+    elif not plan:
+        (args.output_dir / "prompt-revision.json").write_text(json.dumps(live_revision(),ensure_ascii=False,indent=2)+"\n")
     api = requests.Session()
     api.headers["Authorization"] = "Bearer " + os.environ["RUNPOD_API_KEY"]
     server_key = secrets.token_urlsafe(32)
@@ -264,19 +261,18 @@ def main(private_dir):
         env = {**os.environ, "LLAMA_API_KEY": server_key}
         for name in ("RUNPOD_API_KEY", "CHUCKLES_2025_BANK_GZ", "CHUCK2025_READ_TOKEN"):
             env.pop(name, None)
-        if source:
-            option = "--colab-notebook" if args.colab_notebook else "--word-bank"
-            generator = [str(PIPELINE / "generate_march.py"), option, str(source)]
-            if args.example_notebook:
-                generator.extend(["--example-notebook", str(args.example_notebook)])
-            if args.humor_first:
-                generator.append("--humor-first")
-            if args.drafts_from:
-                generator.extend(["--drafts-from", str(args.drafts_from)])
-            if plan:
-                generator.extend(["--guidance-plan", str(args.output_dir / "editor-input.json")])
+        option = "--colab-notebook" if args.colab_notebook else "--word-bank"
+        generator = [str(PIPELINE / "generate_march.py"), option, str(source)]
+        if args.example_notebook:
+            generator.extend(["--example-notebook", str(args.example_notebook)])
+        if args.humor_first:
+            generator.append("--humor-first")
+        if args.drafts_from:
+            generator.extend(["--drafts-from", str(args.drafts_from)])
+        if plan:
+            generator.extend(["--guidance-plan", str(args.output_dir / "editor-input.json")])
         else:
-            generator = [str(PIPELINE / "generate_with_reasoning.py"), "--no-adapter", "--max-new-tokens", "1280"]
+            generator.extend(["--applied-revision",str(args.output_dir / "prompt-revision.json")])
         if args.pair_revision:
             command = [sys.executable, str(PIPELINE / "generate_film_pairs.py"), "--server", endpoint,
                        "--model", MODEL, "--bank", str(source), "--notebook", str(args.example_notebook),

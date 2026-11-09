@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import io
+import json
 import os
 import re
 from pathlib import Path
@@ -51,10 +52,15 @@ def main():
     if args.mode == "prepare":
         with zipfile.ZipFile(io.BytesIO(open_sealed(args.bundle, key))) as z:
             model = z.read("chuckles-27b-dpo.gguf")
+            from pipeline.settings import MODEL, REVISION, SHA256
+
+            report = json.loads(z.read("comparison.json"))
             if (
-                hashlib.sha256(model).hexdigest()
-                != "ec6f81c028db8230f57b5617abd37d0da75a169579392a611a6cc022edf96806"
-            ):
+                report["model"],
+                report["revision"],
+                report["base_weight_sha256"],
+                report["adapter_sha256"],
+            ) != (MODEL, REVISION, SHA256, hashlib.sha256(model).hexdigest()):
                 raise ValueError("Unexpected adapter")
             (args.work / "adapter.gguf").write_bytes(model)
             (args.work / "report.json").write_bytes(z.read("comparison.json"))

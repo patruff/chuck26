@@ -1,74 +1,180 @@
-name: human-guidance
-
+name: 1. Generate parodies for review
 on:
-  push:
-    branches: [main]
-    paths: [guidance/human-feedback.txt]
   workflow_dispatch:
     inputs:
-      feedback_file:
-        description: Tracked .txt file under guidance/ with examples and HUMAN_FEEDBACK comments
-        default: guidance/human-feedback.txt
+      mode:
+        description: Generation backend
+        type: choice
+        options: [base-cpu, runpod, compare-adapter, preview]
+        default: base-cpu
+      system_prompt:
+        description: Audience and judging instructions. Edit here for this run.
         required: true
         type: string
-      movie:
-        description: Optional single movie to test with this feedback (blank runs the ten-title batch)
-        type: string
+        default: |-
+          Write movie-title parodies for adults who enjoy shocking, vulgar, edgy humor. When a dirty or dark reading is clear and a tamer reading is odd or ambiguous, go for the adult joke. An audience should hear the double meaning in the title itself. Give the actual joke when you explain your choice.
 
+          The 2025 word suggestions are leads. Use one when it makes the joke land. One changed word can be the whole joke. Keep recognizable words, rhythm and pronunciation; invent a closer or funnier off-list swap when the suggestions fall flat. Adding another suggested word can spoil a good punchline. Aim adult jokes at consenting adults, hypocrisy or misconduct. Keep children out of sexual premises.
+
+          Judged examples from the audience:
+          • Fight Club: Tight Rub beat White Rub. The reviewer liked the vulgar sexual double meaning of “tight”; a massage explanation missed the joke.
+          • The Running Man: The Cumming Klan beat The Nutting Klan. The reviewer said “Cumming fits phonetically better than Nutting”; otherwise the jokes were much the same.
+          • Forrest Gump: Forrest Dump beat Forest Dump. This vote kept Forrest intact. There was no written comment.
+          • Jurassic Park: Jurassic Pork beat Jurassic Dark, but the reviewer still called it “Pretty bad and tame, not great”. Winning a weak pair is a reason to try a stronger pitch.
+      rank:
+        description: MovieLens rank (1–200)
+        default: '35'
+        type: string
+      feedback_file:
+        description: Optional tracked guidance/*.txt with HUMAN_FEEDBACK for the RunPod prompt editor
+        type: string
+      dpo_run:
+        description: For compare-adapter, the training run containing your sealed adapter
+        type: string
+      key_id:
+        description: For compare-adapter, suffix of the CHUCKLES_DPO_KEY_ secret
+        type: string
 permissions:
   contents: read
-
+  actions: read
 jobs:
-  generate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 100
-    env:
-      FEEDBACK_FILE: ${{ inputs.feedback_file || 'guidance/human-feedback.txt' }}
-      PYTHONUNBUFFERED: "1"
+  prompt:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Locate the feedback file
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$FEEDBACK_FILE" == guidance/*.txt ]]
-          [[ "$(realpath -e -- "$FEEDBACK_FILE")" == "$GITHUB_WORKSPACE"/guidance/* ]]
-          git --literal-pathspecs ls-files --error-unmatch -- "$FEEDBACK_FILE"
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
-      - run: pip install -e '.[trace-export]' 'smolagents==1.24.0' 'huggingface-hub==0.36.0' 'setuptools<81'
-      - name: Revise the prompt from human feedback and generate fresh parodies on RunPod
+          python-version: '3.11'
+      - run: pip install --quiet PyYAML
+      - name: Show the prompt and pinned model
         env:
+          CHUCKLES_PROMPT_OVERRIDE: ${{ inputs.system_prompt }}
+        run: python -m pipeline.settings preview --output system-prompt.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-prompt
+          path: system-prompt.txt
+      - name: Check the private 2025 word bank against the Colab controls
+        if: inputs.mode == 'preview'
+        env:
+          CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
+        run: |
+          pip install -q -e '.[trace-export]'
+          python pipeline/run_gguf_test.py --preflight-only
+  runpod:
+    needs: prompt
+    if: inputs.mode == 'runpod'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: system-prompt
+          path: prompt
+      - run: pip install -q -e '.[trace-export]'
+      - name: Run the smolagents CodeAgent on RunPod
+        env:
+          CHUCKLES_PROMPT_FILE: ${{ github.workspace }}/prompt/system-prompt.txt
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
-          MOVIE: ${{ inputs.movie }}
-        shell: bash
+          FEEDBACK_FILE: ${{ inputs.feedback_file }}
+          FILM_RANK: ${{ inputs.rank }}
         run: |
-          args=()
-          if [[ -n "$MOVIE" ]]; then args+=(--title "$MOVIE"); fi
-          python pipeline/run_gguf_test.py --human-guidance "$FEEDBACK_FILE" --output-dir out/human-guidance "${args[@]}"
-      - name: Export turns for human review
-        run: python pipeline/export_humor_candidates.py out/human-guidance/results.jsonl out/human-guidance/candidates.jsonl --run-manifest out/human-guidance/run.json
+          movie=$(python -m pipeline.film_lists.select_film "$FILM_RANK")
+          options=()
+          if [[ -n "$FEEDBACK_FILE" ]]; then
+            [[ "$(realpath -e -- "$FEEDBACK_FILE")" == "$GITHUB_WORKSPACE"/guidance/*.txt ]]
+            git --literal-pathspecs ls-files --error-unmatch -- "$FEEDBACK_FILE"
+            options+=(--human-guidance "$FEEDBACK_FILE")
+          fi
+          python pipeline/run_gguf_test.py --title "$movie" --output-dir out/run "${options[@]}"
       - uses: actions/upload-artifact@v4
-        id: upload
         if: always()
         with:
-          name: human-guidance
-          path: out/human-guidance
-      - name: Show the first full transcript on the run page
-        if: always()
+          name: review-ready
+          path: |
+            out/run/results.jsonl
+            out/run/prompt-revision.json
+            out/run/next-feedback.txt
+            out/run/transcripts
+  cpu:
+    needs: prompt
+    if: inputs.mode == 'base-cpu' || inputs.mode == 'compare-adapter'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      MODE: ${{ inputs.mode }}
+      FILM_RANK: ${{ inputs.rank }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: system-prompt
+          path: prompt
+      - name: Validate the request before loading weights
         env:
-          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
-        shell: bash
+          ADAPTER_RUN: ${{ inputs.dpo_run }}
+          KEY_ID: ${{ inputs.key_id }}
+          EDITOR_FILE: ${{ inputs.feedback_file }}
         run: |
-          shopt -s nullglob
-          files=(out/human-guidance/transcripts/*.md)
-          if (( ${#files[@]} > 0 )); then
-            echo "[Download all movie transcripts and the editable feedback file]($ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
-            if [[ $(wc -c < "${files[0]}") -lt 950000 ]]; then
-              echo >> "$GITHUB_STEP_SUMMARY"
-              cat "${files[0]}" >> "$GITHUB_STEP_SUMMARY"
-            fi
+          python -m pipeline.film_lists.select_film "$FILM_RANK"
+          if [[ -n "$EDITOR_FILE" ]]; then echo "The optional feedback editor runs in RunPod mode."; exit 1; fi
+          if [[ "$MODE" == compare-adapter ]]; then
+            [[ "$ADAPTER_RUN" =~ ^[0-9]+$ && "$KEY_ID" =~ ^[A-Za-z0-9_]+$ ]] || { echo "Enter a DPO training run and key ID."; exit 1; }
           fi
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'compare-adapter'
+        with:
+          name: sealed-dpo-test
+          path: private-input
+          run-id: ${{ inputs.dpo_run }}
+          github-token: ${{ github.token }}
+      - uses: ./.github/actions/native-gguf
+        with:
+          target: server
+      - run: pip install -q -e '.[trace-export]' cryptography
+      - name: Open the DPO adapter
+        if: inputs.mode == 'compare-adapter'
+        env:
+          RECIPIENT_PRIVATE_KEY: ${{ secrets[format('CHUCKLES_DPO_KEY_{0}', inputs.key_id)] }}
+        run: python -m pipeline.blind_artifact prepare "$RUNNER_TEMP/chuckles" private-input/comparison.bin
+      - name: Draft, check the phonetics and select the funniest title
+        env:
+          CHUCKLES_PROMPT_FILE: ${{ github.workspace }}/prompt/system-prompt.txt
+          CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
+        run: |
+          target="$RUNNER_TEMP/chuckles"
+          adapter=(); extra=()
+          if [[ "$MODE" == compare-adapter ]]; then
+            adapter+=(--lora "$target/adapter.gguf" --lora-init-without-apply)
+            extra+=(--report "$target/report.json")
+          fi
+          env -u CHUCKLES_2025_BANK_GZ "$target/build/bin/llama-server" --model "$target/model.gguf" --alias film-review "${adapter[@]}" --host 127.0.0.1 --port 8080 --jinja --reasoning-format deepseek --reasoning-budget 48 -np 1 -c 2048 -t 4 -tb 4 > "$target/server.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          python pipeline/blind_film_run.py --rank "$FILM_RANK" --work "$target" "${extra[@]}"
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode == 'base-cpu'
+        with:
+          name: review-ready
+          path: ${{ runner.temp }}/chuckles/results.jsonl
+          if-no-files-found: error
+      - name: Seal both model traces
+        if: inputs.mode == 'compare-adapter'
+        env:
+          RECIPIENT_PRIVATE_KEY: ${{ secrets[format('CHUCKLES_DPO_KEY_{0}', inputs.key_id)] }}
+        run: python -m pipeline.blind_artifact pack "$RUNNER_TEMP/chuckles" "$RUNNER_TEMP/films.bin"
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode == 'compare-adapter'
+        with:
+          name: sealed-review
+          path: ${{ runner.temp }}/films.bin
+          if-no-files-found: error

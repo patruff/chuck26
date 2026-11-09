@@ -1,23 +1,4 @@
 MODEL_RUN:
-  The Running Man → The Cumming Man. The model imagined a hunted man ejaculating while sprinting away from armed pursuers. The changed word scored 0.665.
-  Toy Story → Hoe Story. The model leaned on the gardening-tool/slang double meaning and pitched a mockumentary. The changed word scored 0.605.
-  Top Gun → Pop Gun. The model pitched F-14s fighting with children's party noisemakers. The changed word scored 0.650.
-  Full traces: results/2026-11-08-qwen-27b/humor-first-traces.jsonl
-
+  Jurassic Park. Preferred: Jurassic Pork. Rejected: Jurassic Dark.
 HUMAN_FEEDBACK:
-The Cumming Man is okay but The Cumming Klan is better since it involves both racism (KKK) and vulgarity (ejaculation) you get points for combination (also the phonetics are fine). For Hoe Story this is too tame, the audience would have preferred Boy Story because this would imply pedophilia which to the audience is funny. Top Gun to Pop Gun is way too tame as well, it could be called Top Cum or Pop Cum and this would be better.
-
-MODEL_RUN:
-  The original first-turn test picked The Hunning Man and attributed 0.83 to "hunning". That score belongs to "huning". Neither March tool scored the proposed spelling.
-  Source: results/2026-11-08-qwen-27b/humor-colab-first-turn.json
-
-HUMAN_FEEDBACK:
-I don't like the Hunning result since it doesn't make sense.
-
-MODEL_RUN:
-  Toy Story → Toy Gory. The tool had returned five swaps for "toy"; Qwen left "toy" alone and invented "gory" for "story".
-  Top Gun → Cop Fun. "cop" was returned for "top", but "fun" was not returned for "gun".
-  Source: results/2026-11-08-human-guidance/results.jsonl
-
-HUMAN_FEEDBACK:
-Again these are way too tame, not edgy or adult-themed enough.
+  Pretty bad and tame, not great

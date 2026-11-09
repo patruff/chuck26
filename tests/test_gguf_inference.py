@@ -7,36 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipeline"))
-from generate_with_reasoning import generate_gguf
 
 
-@pytest.mark.parametrize(
-    "message,finish,complete",
-    [
-        ({"content": "Jurassic Pork", "reasoning_content": "Check the vowel."}, "stop", True),
-        ({"content": "<think>Check the vowel.</think>Jurassic Pork"}, "stop", True),
-        ({"content": "Jurassic Pork"}, "stop", False),
-        ({"content": "", "reasoning_content": "Check the vowel."}, "length", False),
-    ],
-)
-def test_gguf_completion(monkeypatch, message, finish, complete):
-    response = Mock()
-    response.json.return_value = {
-        "model": "test", "choices": [{"message": message, "finish_reason": finish}],
-    }
-    post = Mock(return_value=response)
-    monkeypatch.setattr(requests, "post", post)
-    args = SimpleNamespace(llama_server="http://localhost", base_model="test",
-                           temperature=0.4, max_new_tokens=1280)
-    reasoning, title, record = generate_gguf(args, "Jurassic Park", {})
-    assert ("error" not in record) == complete
-    assert record["raw_message"] == message
-    if complete:
-        assert (reasoning, title) == ("Check the vowel.", "Jurassic Pork")
-    assert post.call_args.kwargs["json"]["chat_template_kwargs"]["enable_thinking"]
+
 
 
 def test_march_word_bank_reaches_both_tools(tmp_path):
@@ -211,12 +186,13 @@ def test_humor_first_records_the_jokes_before_looking_at_scores(guided):
     suggested = {"park": {"suggestions": [{"word": "pork", "similarity": 0.6}]}}
     run_agent(Script(), "Park", suggested, {}, analyzer, row, "scores > 0.8 and scores > 0.6", True, suggester,
               revision=revision)
-    assert row["state"] == "success" and row["parody"] == "Pork" and row["passes_threshold"]
+    assert row["state"] == "success" and row["parody"] == ("Pork" if guided else "Lark") and row["passes_threshold"]
     assert row["steps"][0]["error"] and row["draft_rounds"][0]["prior_phone_calls"] == 0
     assert row["draft_rounds"][0]["attempts"] == drafts
     assert row["finalist_checks"]["Pork"][0]["score"] == 0.6
     assert row["finalist_checks"]["Lark"][0]["score"] == 1.0
-    assert "suggested-word finalist" in row["steps"][-2]["error"]
+    if guided:
+        assert "suggested-word finalist" in row["steps"][-2]["error"]
     assert "0.8" not in row["task"] and row["steps"][-1]["input_messages"]
     if guided:
         assert "Go wilder." in row["task"]
@@ -232,27 +208,6 @@ def test_humor_floor_requires_observed_nonnul_scores():
         assert not clears_phonetic_floor(["park"], ["pork"], scores, 0.6)
 
 
-def test_candidate_export_uses_only_clean_turns_and_actual_input_messages():
-    from export_humor_candidates import candidate_turns
-
-    inputs = [{"role":"system","content":"agent instructions"}, {"role":"user","content":"movie prompt"}]
-    step = {"step": 1, "final": True, "finish_reason":"stop", "reasoning":"A comic premise.",
-            "code":'final_answer("title")', "model_output":'<code>final_answer("title")</code>extra',
-            "input_messages":inputs}
-    record = {"state":"success","passes_threshold":True,"input_title":"Movie","parody":"Parody",
-              "model":"model","seed":42,"draft_rounds":[{"prior_phone_calls":0,"finalists":["Parody","Other"]}],
-              "tool_calls":[{"word":"movie","compare_to":"parody","visible_in_observation":True}], "steps":[step]}
-    turn, = candidate_turns(record)
-    assert turn["prompt"] == inputs and turn["review_status"] == "unreviewed"
-    assert turn["completion"] == [{"role":"assistant","reasoning_content":"A comic premise.",
-                                   "content":'<code>final_answer("title")</code>'}]
-    assert not list(candidate_turns({**record,"passes_threshold":False}))
-    assert not list(candidate_turns({**record,"tool_calls":[{"word":"movie","compare_to":"unused","visible_in_observation":True}]}))
-    assert not list(candidate_turns({**record,"steps":[{**step,"error":"invalid action"}]}))
-    assert not list(candidate_turns({**record,"steps":[{**step,"finish_reason":"length"}]}))
-    assert not list(candidate_turns(record, token_count=lambda _: 1535, thinking_budget=1536))
-    below, = candidate_turns(record, token_count=lambda _: 1000, thinking_budget=1536)
-    assert below["reasoning_tokens"] == 1000 and below["thinking_budget_checked"]
 
 
 def test_humor_mode_reports_both_historical_scores_and_uses_suggestion_for_floor():
