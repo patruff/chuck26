@@ -357,7 +357,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shard", type=int, choices=range(5), required=True)
     parser.add_argument(
-        "--rank", type=int, choices=RANKS, help="Run just one film in this shard"
+        "--rank",
+        type=int,
+        choices=range(1, 201),
+        help="Run one MovieLens film; additional held-out films use shard 0",
     )
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
@@ -374,8 +377,10 @@ def main():
     }
     ranks = RANKS[args.shard :: 5]
     if args.rank is not None:
-        if args.rank not in ranks:
-            parser.error("The requested rank is not in this shard")
+        if args.rank in RANKS and args.rank not in ranks:
+            parser.error("The requested study rank is not in this shard")
+        if args.rank not in RANKS and args.shard != 0:
+            parser.error("Run an additional held-out film on shard 0")
         ranks = [args.rank]
     films = [
         f
