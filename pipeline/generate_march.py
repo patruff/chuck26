@@ -19,8 +19,6 @@ from trace_review import write_transcripts
 from march_source import BANK_SHA256, BANK_URL, NOTEBOOK
 
 # These Hub sources match the tool classes printed in the linked Colab's saved output.
-COLAB_TOOLS = {"patruff/parody-suggestions": "39102988c0309dd7cb96d196f671c0e5ef9c70aa",
-               "patruff/word-phone": "b1c920767796dde68f208d4182c7d889be02ee5b"}
 RUNNING_MAN_TOOLS = {"patruff/parody-suggestions": "8147e43f9acfb3af5123fd6fd329c112d8ff7a6b",
                      "patruff/word-phone": "044bccae4f60f213a2246e69c03558a52c6525ff"}
 RUNNING_MAN_CELL = "tbAjK5rX4tjo"
@@ -74,24 +72,6 @@ def suggestions_for(title, suggester, words, phones, cutoff=MIN_PHONETIC_SCORE):
             **({"custom_phones": phones} if phones else {}),
         ))
     return raw, {w: r["error"] for w, r in raw.items() if "error" in r}
-
-
-def notebook_words(path):
-    """Read only the literal funny_words list. Notebook code is never executed."""
-    candidates = []
-    for cell in json.loads(path.read_text(encoding="utf-8"))["cells"]:
-        code = "".join(cell.get("source", []))
-        if cell["cell_type"] != "code" or not re.search(r"(?m)^funny_words\s*=", code):
-            continue
-        for stmt in ast.parse(code).body:
-            if isinstance(stmt, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "funny_words" for t in stmt.targets):
-                words = ast.literal_eval(stmt.value)
-                if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
-                    raise ValueError("Expected a literal list of words")
-                candidates.append(words)
-    if len(candidates) != 1 or not candidates[0]:
-        raise ValueError("Expected a single nonempty funny_words list in the notebook")
-    return candidates[0]
 
 
 class WordPhoneTool(Tool):
@@ -318,7 +298,7 @@ def run_agent(model, title, suggested, phones, analyzer, record, reference_promp
                       step_callbacks=[capture], final_answer_checks=[validate], max_steps=7,
                       return_full_result=True, verbosity_level=LogLevel.OFF)
     task = f"""Create a funny parody of the movie title "{title}". Our audience likes absurd, dark or adult wordplay.
-Start with a single-word swap. Then try a two-word change; keep more of the original if it sounds funnier.
+A single-word swap can carry the joke. Add another change only if the whole title gets funnier.
 Compare at least three distinct pitches. Choose the funniest whole phrase that still sounds recognizable.
 Suggestions from parody-suggestions are optional: {json.dumps(suggested, ensure_ascii=False)}
 
@@ -476,6 +456,7 @@ def generate_title(title, seed, *, model, words, phones, cutoff, revisions, sugg
             prompt_suggestions = row["suggested_words"] if humor_first else suggested
             if humor_first and (revision is None or revision.get("selection_policy") == POLICY):
                 prompt = f"Movie: {title}\nSuggested replacements (March scores): {json.dumps(prompt_suggestions, ensure_ascii=False)}"
+                row["prompt_source"] = "editable inference form"
                 row["audience_prompt"] = revision["applied_instructions"] if revision else BASE_INSTRUCTIONS
             else:
                 prompt = running_man_prompt(notebook, title,
@@ -499,9 +480,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("llama-server", "base-model", "titles", "output"):
         parser.add_argument("--" + name, required=True)
-    sources = parser.add_mutually_exclusive_group(required=True)
-    sources.add_argument("--word-bank", type=Path)
-    sources.add_argument("--colab-notebook", type=Path)
+    parser.add_argument("--word-bank", type=Path, required=True)
     parser.add_argument("--example-notebook", type=Path, help="Running Man notebook, used with --word-bank")
     parser.add_argument("--humor-first", action="store_true")
     parser.add_argument("--drafts-from", type=Path, help="Reuse pre-check creative slates where present")
@@ -509,16 +488,12 @@ def main():
     parser.add_argument("--guidance-plan", type=Path, help="Prepared human feedback from the RunPod launcher")
     parser.add_argument("--limit", type=int, required=True)
     args = parser.parse_args()
-    if args.guidance_plan and (not args.humor_first or args.drafts_from):
+    args.humor_first = True
+    if args.guidance_plan and args.drafts_from:
         parser.error("--guidance-plan requires humor-first generation with fresh drafts")
-    if args.example_notebook and not args.word_bank:
-        parser.error("--example-notebook requires the March --word-bank")
-    if args.humor_first:
-        if not args.word_bank or hashlib.sha256(args.word_bank.read_bytes()).hexdigest() != BANK_SHA256:
-            parser.error(f"--humor-first requires the pinned 2025 word bank: {BANK_URL}")
-        args.example_notebook = args.example_notebook or NOTEBOOK
-    if args.drafts_from and not args.humor_first:
-        parser.error("--drafts-from requires --humor-first")
+    if hashlib.sha256(args.word_bank.read_bytes()).hexdigest() != BANK_SHA256:
+        parser.error(f"Expected the pinned 2025 word bank: {BANK_URL}")
+    args.example_notebook = args.example_notebook or NOTEBOOK
     previous = {}
     if args.drafts_from:
         with args.drafts_from.open(encoding="utf-8") as source:
@@ -528,20 +503,14 @@ def main():
                     if row.get("model") != args.base_model or row.get("reference_cell") != HUMOR_BATCH_CELL:
                         parser.error("Cached creative drafts must use the same model and Colab cell")
                     previous[row["input_title"]] = row
-    if args.colab_notebook:
-        words, phones, cutoff = notebook_words(args.colab_notebook), {}, 0.8
-    else:
-        words, phones = load_word_bank(args.word_bank)
-        cutoff = MIN_PHONETIC_SCORE
+    words, phones = load_word_bank(args.word_bank)
+    cutoff = MIN_PHONETIC_SCORE
     titles = read_titles(args.titles)[:args.limit]
     if not titles:
         raise SystemExit("No titles to generate")
     print(f"CodeAgent: {len(words)} words, {len(phones)} custom pronunciations, cutoff {cutoff}", flush=True)
-    revisions = COLAB_TOOLS if args.colab_notebook else RUNNING_MAN_TOOLS
-    if args.colab_notebook or args.example_notebook:
-        suggester, analyzer = [load_tool(repo, revision=rev, trust_remote_code=True) for repo, rev in revisions.items()]
-    else:
-        suggester, analyzer = [load_tool(repo, revision=sha, trust_remote_code=True) for repo, sha in RUNNING_MAN_TOOLS.items()]
+    revisions = RUNNING_MAN_TOOLS
+    suggester, analyzer = [load_tool(repo, revision=rev, trust_remote_code=True) for repo, rev in revisions.items()]
     model = make_model(args.base_model, args.llama_server)
 
     output_dir = Path(args.output).parent
@@ -553,7 +522,7 @@ def main():
 
     def sample(title, seed):
         return generate_title(title, seed, model=model, words=words, phones=phones, cutoff=cutoff,
-                              revisions=revisions if args.colab_notebook or args.example_notebook else {},
+                              revisions=revisions,
                               suggester=suggester, analyzer=analyzer, notebook=args.example_notebook,
                               humor_first=args.humor_first, previous=previous, revision=revision)
 

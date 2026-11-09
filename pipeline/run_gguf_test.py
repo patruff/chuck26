@@ -101,11 +101,8 @@ def main(private_dir):
     p.add_argument("--limit", type=int, default=10)
     p.add_argument("--output-dir", type=Path, help="New directory for this run")
     p.add_argument("--preflight-only", action="store_true", help="Verify the 2025 bank and tools on CPU and exit")
-    sources = p.add_mutually_exclusive_group()
-    sources.add_argument("--march-word-bank", type=Path, metavar="WORD_STRUCTURES.PY",
-                         help="Run CodeAgent with the March word bank and custom pronunciations")
-    sources.add_argument("--colab-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
-                         help="Run CodeAgent with the Colab funny_words list and 0.8 suggestion cutoff")
+    p.add_argument("--march-word-bank", type=Path, metavar="WORD_STRUCTURES.PY",
+                   help="Local copy of the pinned 2025 word bank and pronunciations")
     p.add_argument("--example-notebook", type=Path, metavar="NOTEBOOK.IPYNB",
                    help="With --march-word-bank, replay the saved Running Man cell and both finalists' word checks")
     p.add_argument("--humor-first", action="store_true",
@@ -121,10 +118,9 @@ def main(private_dir):
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="SECURE")
     p.add_argument("--timeout-mins", type=int, default=80)
     args = p.parse_args()
-    production = not args.colab_notebook
     plan = None
     if args.human_guidance:
-        if not production or args.drafts_from:
+        if args.drafts_from:
             p.error("--human-guidance requires the 2025 tools and fresh drafts")
         if args.human_guidance.suffix.lower() != ".txt" or not args.human_guidance.is_file():
             p.error("--human-guidance requires an existing UTF-8 .txt file")
@@ -150,22 +146,18 @@ def main(private_dir):
         args.limit = len(films)
     elif args.slots != 1 or args.checkpoints:
         p.error("--slots and --checkpoints require a paired batch")
-    if not production and (args.example_notebook or args.humor_first or args.preflight_only):
-        p.error("The humor-first notebook and preflight require the 2025 bank")
-    if production:
-        try:
-            args.march_word_bank = snapshot_bank(args.march_word_bank, private_dir)
-        except (ValueError, OSError, requests.RequestException, subprocess.TimeoutExpired) as exc:
-            p.error(str(exc))
-        if args.example_notebook is None:
-            args.example_notebook = NOTEBOOK
-            args.humor_first = True
-        if not args.example_notebook.is_file():
-            p.error("Example notebook file does not exist")
-        controls = preflight(args.march_word_bank)
-        print(json.dumps(controls, indent=2), flush=True)
-        if args.preflight_only:
-            return
+    try:
+        args.march_word_bank = snapshot_bank(args.march_word_bank, private_dir)
+    except (ValueError, OSError, requests.RequestException, subprocess.TimeoutExpired) as exc:
+        p.error(str(exc))
+    args.example_notebook = args.example_notebook or NOTEBOOK
+    args.humor_first = True
+    if not args.example_notebook.is_file():
+        p.error("Example notebook file does not exist")
+    controls = preflight(args.march_word_bank)
+    print(json.dumps(controls, indent=2), flush=True)
+    if args.preflight_only:
+        return
     if args.output_dir is None:
         p.error("A GPU run requires --output-dir")
     if args.title is not None:
@@ -176,21 +168,15 @@ def main(private_dir):
             csv.writer(f).writerows([["title"], [args.title.strip()]])
         args.limit = 1
     if args.titles is None:
-        args.titles = PIPELINE / ("humor_sample_titles.csv" if production else "movie_titles_1995_1999.csv")
+        args.titles = PIPELINE / "humor_sample_titles.csv"
     if args.limit < 1 or args.timeout_mins < 1 or not args.titles.is_file():
         p.error("Use an existing titles CSV, a positive limit and a positive timeout")
     if not os.getenv("RUNPOD_API_KEY"):
         p.error("RUNPOD_API_KEY is required")
-    source = args.march_word_bank or args.colab_notebook
-    if source and not source.is_file():
-        p.error("The word bank or notebook must be a local file")
-    if args.example_notebook and (not args.march_word_bank or not args.example_notebook.is_file()):
-        p.error("--example-notebook requires a local notebook and --march-word-bank")
-    if args.humor_first and not args.example_notebook:
-        p.error("--humor-first requires --example-notebook")
-    if args.drafts_from and (not args.humor_first or not args.drafts_from.is_file()):
-        p.error("--drafts-from needs a local results JSONL and --humor-first")
-    reasoning_budget, context = (1536, 16384) if source else (768, 4096)
+    source = args.march_word_bank
+    if args.drafts_from and not args.drafts_from.is_file():
+        p.error("--drafts-from needs a local results JSONL")
+    reasoning_budget, context = 1536, 16384
     args.output_dir.mkdir(parents=True, exist_ok=False)
     if plan:
         (args.output_dir / "guidance.txt").write_bytes(raw_guidance)
@@ -207,21 +193,13 @@ def main(private_dir):
         "pod_name": name, "model": MODEL, "revision": REVISION, "file": FILENAME,
         "sha256": SHA256, "image": IMAGE, "gpu_requested": args.gpu, "cloud": args.cloud,
         "started_at": utc_now(), "titles_file": args.titles.name, "limit": args.limit,
-        "temperature": 0.7 if source else 0.4, "seed": 42,
+        "temperature": 0.7, "seed": 42,
         "reasoning_budget": reasoning_budget, "context": context,
     }
-    if source:
-        meta.update(profile="colab-codeagent" if args.colab_notebook else "march-codeagent",
-                    source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
-                    suggestion_cutoff=0.8 if args.colab_notebook else 0.6)
-        if production:
-            meta.update(word_bank_url=BANK_URL, preflight=controls)
-    if args.example_notebook:
-        meta.update(profile="running-man-codeagent",
-                    notebook_sha256=hashlib.sha256(args.example_notebook.read_bytes()).hexdigest())
-    if args.humor_first:
-        meta.update(profile="humor-first-codeagent", reference_cell="GvGq8GcoGbCD", phonetic_floor=0.6,
-                    changed_word_floor_measure="parody-suggestions", auxiliary_measure="word-phone")
+    meta.update(profile="humor-first-codeagent", source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                word_bank_url=BANK_URL, preflight=controls, suggestion_cutoff=0.6,
+                reference_cell="GvGq8GcoGbCD", phonetic_floor=0.6,
+                changed_word_floor_measure="parody-suggestions", auxiliary_measure="word-phone")
     if args.drafts_from:
         meta["draft_source_sha256"] = hashlib.sha256(args.drafts_from.read_bytes()).hexdigest()
     if args.title:
@@ -261,8 +239,7 @@ def main(private_dir):
         env = {**os.environ, "LLAMA_API_KEY": server_key}
         for name in ("RUNPOD_API_KEY", "CHUCKLES_2025_BANK_GZ", "CHUCK2025_READ_TOKEN"):
             env.pop(name, None)
-        option = "--colab-notebook" if args.colab_notebook else "--word-bank"
-        generator = [str(PIPELINE / "generate_march.py"), option, str(source)]
+        generator = [str(PIPELINE / "generate_march.py"), "--word-bank", str(source)]
         if args.example_notebook:
             generator.extend(["--example-notebook", str(args.example_notebook)])
         if args.humor_first:

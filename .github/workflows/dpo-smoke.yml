@@ -22,14 +22,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - uses: ./.github/actions/native-gguf
-        with:
-          target: dpo
-      - name: Train, reload and compare on identical prompts
+      - name: Check the private or tracked preferences
         env:
           DATASET_FILE: ${{ inputs.dataset_file }}
           PRIVATE_REQUEST: ${{ secrets[format('CHUCKLES_DPO_{0}', inputs.test_id)] }}
         run: |
+          mkdir -p "$RUNNER_TEMP/chuckles"
           cd "$RUNNER_TEMP/chuckles"
           export PYTHONPATH="$GITHUB_WORKSPACE"
           umask 077
@@ -42,6 +40,13 @@ jobs:
           fi
           python -m pipeline.review_request unpack request.json "${options[@]}"
           unset PRIVATE_REQUEST
+      - uses: ./.github/actions/native-gguf
+        with:
+          target: dpo
+      - name: Train, reload and compare on identical prompts
+        run: |
+          cd "$RUNNER_TEMP/chuckles"
+          export PYTHONPATH="$GITHUB_WORKSPACE"
           python "$GITHUB_WORKSPACE/training/gguf_dpo/smoke.py" --input request.json --driver "$PWD/forward" --model model.gguf --work scratch --assets assets --output result
           python "$GITHUB_WORKSPACE/training/gguf_dpo/seal.py" request.json result "$RUNNER_TEMP/comparison.bin"
       - uses: actions/upload-artifact@v4
@@ -49,4 +54,4 @@ jobs:
           name: sealed-dpo-test
           path: ${{ runner.temp }}/comparison.bin
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30

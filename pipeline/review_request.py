@@ -12,9 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def review_rows(path):
+    return parse_reviews(path.read_bytes())
+
+
+def parse_reviews(payload):
     rows = []
     seen = set()
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for number, line in enumerate(payload.decode("utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
@@ -57,7 +61,8 @@ def review_rows(path):
 
 
 def make_request(path, public_key):
-    rows = review_rows(path)
+    payload = path.read_bytes()
+    rows = parse_reviews(payload)
     first = rows[0]
     probes = [
         {"film": first["film"]["title"], "prompt": first["prompt"], "reviewed": True}
@@ -83,7 +88,7 @@ def make_request(path, public_key):
         if len(probes) == 3:
             break
     return {
-        "dataset_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "dataset_sha256": hashlib.sha256(payload).hexdigest(),
         "rows": rows,
         "probes": probes,
         "public_key": public_key,
@@ -106,7 +111,11 @@ def main():
     p.add_argument("output", type=Path)
     p.add_argument("--dataset", type=Path)
     args = p.parse_args()
-    blob = os.environ.pop("PRIVATE_REQUEST")
+    blob = os.environ.pop("PRIVATE_REQUEST", "")
+    if not blob:
+        p.error(
+            "Missing private request. Use review_cycle.py train --prepare-only and supply its key ID."
+        )
     data = (
         json.loads(gzip.decompress(base64.b64decode(blob[5:], validate=True)))
         if blob.startswith("gzip:")

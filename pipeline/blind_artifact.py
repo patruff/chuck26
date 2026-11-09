@@ -55,6 +55,8 @@ def main():
             from pipeline.settings import MODEL, REVISION, SHA256
 
             report = json.loads(z.read("comparison.json"))
+            if model[:4] != b"GGUF":
+                raise ValueError("The adapter is not GGUF")
             if (
                 report["model"],
                 report["revision"],

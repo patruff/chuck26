@@ -100,3 +100,36 @@ def test_default_launch_uses_bundled_colab_and_bank_before_renting(tmp_path, mon
     assert "CHUCKLES_2025_BANK_GZ" not in child.call_args.kwargs["env"]
     assert json.loads((output/"run.json").read_text())["termination_confirmed"]
     terminate.assert_called_once_with(api, "fixture")
+
+
+def test_paired_runpod_uses_live_prompt_without_archived_editor_plan(tmp_path, monkeypatch):
+    from settings import live_revision
+    prompt=tmp_path/"prompt.txt"
+    prompt.write_text("Keep one vulgar, intelligible swap.")
+    monkeypatch.setenv("CHUCKLES_PROMPT_FILE",str(prompt))
+    frozen=tmp_path/"revision.json"
+    frozen.write_text(json.dumps(live_revision()))
+    films=tmp_path/"films.csv"
+    films.write_text("rank,title\n35,Speed\n")
+    output=tmp_path/"out"
+    monkeypatch.setenv("RUNPOD_API_KEY","fixture")
+    monkeypatch.setattr(sys,"argv",["run","--titles",str(films),"--pair-revision",str(frozen),
+                                   "--checkpoints",str(tmp_path/"samples"),"--output-dir",str(output)])
+    monkeypatch.setattr(run_gguf_test,"snapshot_bank",lambda path, dest:prompt)
+    monkeypatch.setattr(run_gguf_test,"preflight",lambda bank:{"passed":True})
+    api=Mock(headers={})
+    api.post.return_value.ok=True
+    api.post.return_value.json.return_value={"id":"fixture","costPerHr":1}
+    monkeypatch.setattr(run_gguf_test.requests,"Session",lambda:api)
+    monkeypatch.setattr(run_gguf_test,"wait_ready",lambda *args:{})
+    stop=Mock()
+    monkeypatch.setattr(run_gguf_test,"terminate",stop)
+    launch=Mock()
+    monkeypatch.setattr(run_gguf_test.subprocess,"run",launch)
+    run_gguf_test.main(tmp_path)
+    command=launch.call_args.args[0]
+    assert command[1].endswith("generate_film_pairs.py")
+    revision=json.loads(Path(command[command.index("--revision")+1]).read_text())
+    assert revision["applied_instructions"]==prompt.read_text()
+    assert json.loads((output/"run.json").read_text())["applied_instructions_sha256"]==revision["applied_instructions_sha256"]
+    stop.assert_called_once_with(api,"fixture")

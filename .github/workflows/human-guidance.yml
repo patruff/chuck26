@@ -25,6 +25,9 @@ on:
         description: MovieLens rank (1–200)
         default: '35'
         type: string
+      movie:
+        description: RunPod only. Optional movie title to use instead of rank.
+        type: string
       feedback_file:
         description: Optional tracked guidance/*.txt with HUMAN_FEEDBACK for the RunPod prompt editor
         type: string
@@ -82,9 +85,11 @@ jobs:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
           FEEDBACK_FILE: ${{ inputs.feedback_file }}
+          MOVIE_TITLE: ${{ inputs.movie }}
           FILM_RANK: ${{ inputs.rank }}
         run: |
-          movie=$(python -m pipeline.film_lists.select_film "$FILM_RANK")
+          movie="$MOVIE_TITLE"
+          if [[ -z "$movie" ]]; then movie=$(python -m pipeline.film_lists.select_film "$FILM_RANK"); fi
           options=()
           if [[ -n "$FEEDBACK_FILE" ]]; then
             [[ "$(realpath -e -- "$FEEDBACK_FILE")" == "$GITHUB_WORKSPACE"/guidance/*.txt ]]
@@ -101,6 +106,13 @@ jobs:
             out/run/prompt-revision.json
             out/run/next-feedback.txt
             out/run/transcripts
+      - name: Open this run for judging
+        if: success()
+        run: |
+          echo "Fetch the results with \`python scripts/review_cycle.py fetch $GITHUB_RUN_ID\` and open the review app." >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f out/run/next-feedback.txt ]]; then
+            python -c 'import json,os; from pathlib import Path; t=json.loads(Path("out/run/prompt-revision.json").read_bytes())["applied_instructions"]; open(os.environ["GITHUB_STEP_SUMMARY"],"a").write("\n## Applied feedback revision\n\n"+"\n".join("    "+line for line in t.splitlines())+"\n")'
+          fi
   cpu:
     needs: prompt
     if: inputs.mode == 'base-cpu' || inputs.mode == 'compare-adapter'
@@ -124,9 +136,10 @@ jobs:
           ADAPTER_RUN: ${{ inputs.dpo_run }}
           KEY_ID: ${{ inputs.key_id }}
           EDITOR_FILE: ${{ inputs.feedback_file }}
+          MOVIE_TITLE: ${{ inputs.movie }}
         run: |
           python -m pipeline.film_lists.select_film "$FILM_RANK"
-          if [[ -n "$EDITOR_FILE" ]]; then echo "The optional feedback editor runs in RunPod mode."; exit 1; fi
+          if [[ -n "$EDITOR_FILE" || -n "$MOVIE_TITLE" ]]; then echo "Custom titles and the optional feedback editor use RunPod mode."; exit 1; fi
           if [[ "$MODE" == compare-adapter ]]; then
             [[ "$ADAPTER_RUN" =~ ^[0-9]+$ && "$KEY_ID" =~ ^[A-Za-z0-9_]+$ ]] || { echo "Enter a DPO training run and key ID."; exit 1; }
           fi
@@ -178,3 +191,10 @@ jobs:
           name: sealed-review
           path: ${{ runner.temp }}/films.bin
           if-no-files-found: error
+      - name: Open this run for judging
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          key=''
+          if [[ "$MODE" == compare-adapter ]]; then key=' --key .private/dpo.pem'; fi
+          echo "Fetch the results with \`python scripts/review_cycle.py fetch ${GITHUB_RUN_ID}${key}\` and open the review app." >> "$GITHUB_STEP_SUMMARY"

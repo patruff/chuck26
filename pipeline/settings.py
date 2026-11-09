@@ -66,6 +66,7 @@ def main():
     if summary := os.getenv("GITHUB_STEP_SUMMARY"):
         with open(summary, "a", encoding="utf-8") as f:
             f.write(f"## Inference prompt\n\nModel `{MODEL}` · `{FILENAME}`\n\n")
+            f.write(f"Weight revision `{REVISION}` · Prompt SHA-256 `{hashlib.sha256(prompt.encode()).hexdigest()}`\n\n")
             f.write("\n".join("    " + line for line in prompt.splitlines()) + "\n")
 
 

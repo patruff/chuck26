@@ -80,14 +80,6 @@ def test_codeagent_retries_unobserved_final_and_uses_real_tool_feedback():
     assert row["attempts"][0]["swaps"][0]["score"] == 1.12
 
 
-def test_colab_word_list_is_data_only(tmp_path):
-    from generate_march import notebook_words
-    notebook = tmp_path / "source.ipynb"
-    notebook.write_text(json.dumps({"cells": [{"cell_type": "code",
-                        "source": ["funny_words = ['one', 'one', 'two']\n", "raise Exception()"]}]}))
-    assert notebook_words(notebook) == ["one", "one", "two"]
-
-
 def test_running_man_prompt_renders_only_input_substitutions(tmp_path):
     from generate_march import RUNNING_MAN_CELL, running_man_prompt
     notebook = tmp_path / "May.ipynb"
