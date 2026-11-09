@@ -199,18 +199,25 @@ def run_film(
         {k: {"type": "string"} for k in ("first", "second", "idea")}
     )
     originals = title.split()
-    for round_number in (1, 2):
-        if round_number == 2:
+    for round_number in (1, 2, 3):
+        if round_number > 1:
+            # Quote the actual draft before feeding back the verifier's observations.
             messages = messages + [
+                {"role": "assistant", "content": draft_output},
                 {
                     "role": "user",
-                    "content": "Revise the pitches. Give two distinct, recognizable titles, including an off-list swap if it is funnier. "
-                    "These are the actual checks from the first round: "
+                    "content": "Pitch two NEW titles. The checked titles below are already recorded. "
+                    "Repeating or reordering them cannot improve their scores. Read the changed word’s "
+                    "phones: aim for the same stressed vowel and a close ending, or change a different "
+                    "word in the film title. Keep the words that already work. Make the adult meaning "
+                    "audible in the title itself. The floor for each changed word is 0.60.\n"
+                    "Checked titles and actual tool results: "
                     + json.dumps(checks, ensure_ascii=False),
                 }
             ]
         step = model_call(messages, seed, scale, draft_schema)
-        draft = json.loads(step["model_output"])
+        draft_output = step["model_output"]
+        draft = json.loads(draft_output)
         step.update(kind="Draft titles", step=len(steps) + 1)
         steps.append(step)
         if not step["reasoning"] and not any(
@@ -230,6 +237,7 @@ def run_film(
             )
             reflection.update(kind="Creative deliberation", step=len(steps) + 1)
             steps.append(reflection)
+        checked_before = len(checks)
         for key in ("first", "second"):
             candidate = draft[key].strip()
             if (
@@ -252,6 +260,10 @@ def run_film(
             if all(p.get("score") is not None and p["score"] >= 0.6 for p in v)
         ]
         if valid and len(checks) >= 2:
+            break
+        # Give a repeated/invalid second slate one recovery turn. Two different
+        # checked slates are sufficient to report a genuine below-floor fallback.
+        if round_number == 2 and len(checks) >= 2 and len(checks) > checked_before:
             break
     if not checks or (adapter_sha is None and len(checks) < 2):
         raise ValueError(
@@ -318,7 +330,7 @@ def run_film(
         attempts=attempts,
         parody=winner,
         explanation=decision["why"],
-        runner_up=next((t for t in checks if t != winner), None),
+        runner_up=next((t for t in [*valid, *checks] if t != winner), None),
         trace_format="native-tools",
         selection_policy=POLICY,
         audience_prompt=instructions,

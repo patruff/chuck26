@@ -128,3 +128,72 @@ def test_dpo_request_uses_choices_without_private_comments(tmp_path):
     p.write_text((json.dumps(row) + "\n") * 2)
     with pytest.raises(ValueError, match="repeated"):
         review_rows(p)
+
+
+def test_native_retry_uses_actual_failed_swaps_and_recovers_a_repeated_slate(
+    monkeypatch, tmp_path
+):
+    drafts = iter(
+        [
+            ("Reservoir Dicks", "Reservoir Dumps"),
+            ("Reservoir Dumps", "Reservoir Dicks"),
+            ("Reservoir Hogs", "Reservoir Bogs"),
+        ]
+    )
+    draft_calls = []
+
+    def reply(messages, seed, scale, schema):
+        if "winner" in schema["properties"]:
+            assert schema["properties"]["winner"]["enum"] == [
+                "Reservoir Hogs",
+                "Reservoir Bogs",
+            ]
+            answer = {"winner": "Reservoir Hogs", "why": "The gang name lands."}
+        else:
+            first, second = next(drafts)
+            if draft_calls:
+                assert messages[-2] == {"role": "assistant", "content": draft_calls[-1]}
+                assert "Pitch two NEW titles" in messages[-1]["content"]
+                assert '"compare_to": "Dicks", "score": 0.15' in messages[-1]["content"]
+            answer = {
+                "first": first,
+                "second": second,
+                "idea": "Compare the gang names.",
+            }
+            draft_calls.append(json.dumps(answer))
+        return dict(
+            model_output=json.dumps(answer),
+            reasoning="Compare the names.",
+            input_messages=messages,
+        )
+
+    class Phone:
+        def __init__(self, *args):
+            self.calls = []
+
+        def forward(self, word, swap):
+            score = {"Dicks": 0.15, "Dumps": 0.14, "Hogs": 0.65, "Bogs": 0.60}.get(
+                swap, 1.0
+            )
+            observation = dict(word=word, compare_to=swap, score=score)
+            self.calls.append(observation)
+            return observation
+
+    monkeypatch.setattr("blind_film_run.model_call", reply)
+    monkeypatch.setattr("blind_film_run.WordPhoneTool", Phone)
+    run_film(
+        {"rank": "45", "title": "Reservoir Dogs"},
+        0,
+        ({"reservoir": [], "dogs": []}, {}),
+        None,
+        None,
+        {},
+        tmp_path,
+        None,
+        "Audience fixture",
+    )
+    with gzip.open(tmp_path / "045-0.json.gz") as f:
+        row = json.load(f)["row"]
+    assert row["passes_threshold"] and row["parody"] == "Reservoir Hogs"
+    assert row["runner_up"] == "Reservoir Bogs"
+    assert len(row["finalist_checks"]) == 4 and len(row["steps"]) == 4
