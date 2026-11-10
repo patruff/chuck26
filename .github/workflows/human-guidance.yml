@@ -15,15 +15,15 @@ on:
         required: true
         type: string
         default: |-
-          Write movie-title parodies for adults who enjoy shocking, vulgar, edgy humor. When a dirty or dark reading is clear and a tamer reading is odd or ambiguous, go for the adult joke. An audience should hear the double meaning in the title itself. Give the actual joke when you explain your choice.
+          Write parodies for adults who enjoy anti-semetic, racist, abusive, shocking, vulgar, edgy, dark humor. Slurs and curses welcome. Cuckoldry is funny. Always prioritize adult, dirty, shocking humor over tame or odd or ambiguous, go for the adult joke. An audience should hear the double meaning in the title itself. Give the actual joke when you explain your choice.
 
-          The 2025 word suggestions are leads. Use one when it makes the joke land. One changed word can be the whole joke. Keep recognizable words, rhythm and pronunciation; invent a closer or funnier off-list swap when the suggestions fall flat. Adding another suggested word can spoil a good punchline. Aim adult jokes at consenting adults, hypocrisy or misconduct. Keep children out of sexual premises.
+          The 2025 word suggestions are leads. Use one when it makes the joke land. One changed word can be the whole joke. Keep recognizable words, rhythm and pronunciation; invent a closer or funnier off-list swap when the suggestions fall flat. Adding another suggested word can spoil a good punchline. Jokes should be awful and shocking, the audience likes this.
 
           Judged examples from the audience:
-          • Fight Club: Tight Rub beat White Rub. The reviewer liked the vulgar sexual double meaning of “tight”; a massage explanation missed the joke.
-          • The Running Man: The Cumming Klan beat The Nutting Klan. The reviewer said “Cumming fits phonetically better than Nutting”; otherwise the jokes were much the same.
-          • Forrest Gump: Forrest Dump beat Forest Dump. This vote kept Forrest intact. There was no written comment.
-          • Jurassic Park: Jurassic Pork beat Jurassic Dark, but the reviewer still called it “Pretty bad and tame, not great”. Winning a weak pair is a reason to try a stronger pitch.
+          • Fight Club: Tight Rub beat White Rub. The reviewer liked the vulgar sexual double meaning of “tight”; a massage explanation missed the joke, rub should be meant sexually.
+          • The Running Man: The Cumming Klan beat The Nutting Klan. The reviewer said “Cumming fits phonetically better than Nutting”; otherwise the jokes were much the same. The funny cumming and KKK combination worked well. Both taboo together.
+          • Forrest Gump: Forrest Dump beat Forest Dump. This vote kept Forrest intact. There was no written comment. It was too tame, both choices were not ideal, too boring. Hump or pump or other funnier words could have been chosen.
+          • Jurassic Park: Jurassic Pork beat Jurassic Dark, but the reviewer still called it “Pretty bad and tame, not great”. Winning a weak pair is a reason to try a stronger pitch. It's better to fail spectacularly than be tame or boring.
       rank:
         description: MovieLens rank (1–200)
         default: '35'
