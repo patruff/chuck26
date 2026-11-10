@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://huggingface.co https://*.huggingface.co https://*.hf.co https://api.github.com; base-uri 'none'; form-action 'none'; object-src 'none'"
+    />
+    <title>Review parodies · Chuckles</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header>
+      <a class="wordmark" href="./" aria-label="Chuckles home"
+        >Chuckles<span>.</span></a
+      ><a class="nav-title" href="https://github.com/patruff/chuck26/actions"
+        >Workflow runs ↗</a
+      ><button id="connect" disabled class="quiet">Connect account</button>
+    </header>
+    <main>
+      <div class="mast">
+        <div><h1>Review parodies</h1></div>
+        <div class="toolbar">
+          <button id="infer" disabled>Run inference</button
+          ><button id="train" disabled>Train new adapter</button>
+        </div>
+      </div>
+      <div id="status" role="status" aria-live="polite"></div>
+      <div class="workspace">
+        <aside>
+          <label for="collection">Collection</label
+          ><select id="collection"></select>
+          <details id="queue" open>
+            <summary>Film queue <span id="total"></span></summary>
+            <input
+              type="search"
+              id="search"
+              placeholder="Find a film"
+              aria-label="Find a film"
+            />
+            <div id="films"></div>
+          </details>
+        </aside>
+        <section class="review" aria-label="Current comparison">
+          <div id="empty">Loading the review catalog…</div>
+          <div id="comparison" hidden>
+            <div class="film-tools">
+              <span id="position"></span>
+              <div>
+                <button id="prev" aria-label="Previous film">←</button
+                ><button id="next" aria-label="Next film">→</button>
+              </div>
+            </div>
+            <h2 id="film"></h2>
+            <div class="cards" id="pitches"></div>
+            <div id="shared-note"></div>
+            <div id="alternatives"></div>
+            <label for="comment">Reviewer note <span>(optional)</span></label
+            ><textarea
+              id="comment"
+              rows="2"
+              placeholder="What made one title work better?"
+            ></textarea>
+            <div class="save-bar">
+              <span id="state"></span
+              ><button id="save" class="primary">Save reviews</button>
+            </div>
+            <div id="conflict"></div>
+            <div id="reveal"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+    <dialog id="dialog">
+      <div class="dialog-head">
+        <h2 id="dialog-title"></h2>
+        <button id="close" aria-label="Close">×</button>
+      </div>
+      <div id="dialog-body"></div>
+    </dialog>
+  </body>
+</html>

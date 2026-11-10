@@ -1,0 +1,70 @@
+name: Run inference
+run-name: Inference · ${{ inputs.source }} · ${{ inputs.model }}
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Use the settings saved in Review parodies, or select inputs here
+        type: choice
+        options: [page, catalog, csv]
+      rank:
+        description: MovieLens rank (1–200) for a catalog run
+        default: '35'
+        type: string
+      revision:
+        description: Optional dataset revision from Review parodies
+        type: string
+      model:
+        description: Generate two pitches with the base model or latest published adapter
+        type: choice
+        options: [base, latest-adapter]
+permissions:
+  contents: read
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Resolve input titles and selected adapter
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY }}
+          CHUCKLES_REVIEW_DATASET: ${{ vars.CHUCKLES_REVIEW_DATASET }}
+          CHUCKLES_ADAPTER_REPO: ${{ vars.CHUCKLES_ADAPTER_REPO }}
+          SOURCE: ${{ inputs.source }}
+          REVISION: ${{ inputs.revision }}
+          MODEL: ${{ inputs.model }}
+          RANK: ${{ inputs.rank }}
+        run: |
+          pip install -q Flask PyYAML 'huggingface_hub==0.36.0'
+          target="$RUNNER_TEMP/chuckles"; mkdir -p "$target"
+          python scripts/pages_studio.py inference-settings "$target" --source "$SOURCE" --revision "$REVISION" --model "$MODEL" --rank "$RANK"
+      - uses: ./.github/actions/native-gguf
+        with:
+          target: server
+      - run: pip install -q -e '.[trace-export]'
+      - name: Generate and check the pitches
+        env:
+          CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
+        run: |
+          set -eu
+          target="$RUNNER_TEMP/chuckles"
+          args=(--rank "$(cat "$target/rank.txt")"); lora=()
+          if [[ -f "$target/input.csv" ]]; then args=(--titles "$target/input.csv"); fi
+          if [[ -f "$target/adapter.gguf" ]]; then
+            lora=(--lora "$target/adapter.gguf" --lora-init-without-apply)
+            args+=(--adapter-manifest "$target/adapter-manifest.json")
+          fi
+          env -u CHUCKLES_2025_BANK_GZ "$target/build/bin/llama-server" --model "$target/model.gguf" --alias film-review "${lora[@]}" --host 127.0.0.1 --port 8080 --jinja --reasoning-format deepseek --reasoning-budget 48 -np 1 -c 2048 -t 4 -tb 4 > "$target/server.log" 2>&1 &
+          server=$!; trap 'kill "$server" 2>/dev/null || true' EXIT
+          python pipeline/blind_film_run.py --work "$target" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-ready
+          path: ${{ runner.temp }}/chuckles/results.jsonl
+          if-no-files-found: error

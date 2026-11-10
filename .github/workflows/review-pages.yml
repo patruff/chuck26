@@ -1,0 +1,57 @@
+name: Review parodies
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: Optional inference run ID to archive
+        type: string
+  push:
+    branches: [main]
+    paths: ['studio/**', 'scripts/pages_studio.py', '.github/workflows/review-pages.yml', 'results/**']
+  workflow_run:
+    workflows: ['1. Generate parodies for review', '3. RunPod bulk generation and resume', 'Run inference']
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+concurrency:
+  group: review-pages
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -q Flask 'huggingface_hub==0.36.0'
+      - name: Archive completed comparisons and build Pages
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          CHUCKLES_REVIEW_DATASET: ${{ vars.CHUCKLES_REVIEW_DATASET }}
+          CHUCKLES_ADAPTER_REPO: ${{ vars.CHUCKLES_ADAPTER_REPO }}
+          SOURCE_RUN: ${{ inputs.run || github.event.workflow_run.id }}
+        run: |
+          set -eu
+          if [[ -n "$SOURCE_RUN" ]]; then python scripts/pages_studio.py sync --run "$SOURCE_RUN"; fi
+          python scripts/pages_studio.py sync
+          python scripts/pages_studio.py build _site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - name: Publish review page
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -115,7 +115,7 @@ jobs:
       - name: Open this run for judging
         if: success()
         run: |
-          echo "Fetch the results with \`python scripts/review_cycle.py fetch $GITHUB_RUN_ID\` and open the review app." >> "$GITHUB_STEP_SUMMARY"
+          echo "[Open Review parodies](https://patruff.github.io/chuck26/) to judge the completed pitches." >> "$GITHUB_STEP_SUMMARY"
           if [[ -f out/run/next-feedback.txt ]]; then
             python -c 'import json,os; from pathlib import Path; t=json.loads(Path("out/run/prompt-revision.json").read_bytes())["applied_instructions"]; open(os.environ["GITHUB_STEP_SUMMARY"],"a").write("\n## Applied feedback revision\n\n"+"\n".join("    "+line for line in t.splitlines())+"\n")'
           fi
@@ -201,6 +201,8 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
         run: |
-          key=''
-          if [[ "$MODE" == compare-adapter ]]; then key=' --key .private/dpo.pem'; fi
-          echo "Fetch the results with \`python scripts/review_cycle.py fetch ${GITHUB_RUN_ID}${key}\` and open the review app." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$MODE" == compare-adapter ]]; then
+            echo "Open this sealed comparison with \`python scripts/review_cycle.py fetch $GITHUB_RUN_ID --key .private/dpo.pem\`." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "[Open Review parodies](https://patruff.github.io/chuck26/) to judge the completed pitches." >> "$GITHUB_STEP_SUMMARY"
+          fi

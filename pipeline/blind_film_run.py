@@ -159,6 +159,7 @@ def run_film(
     directory,
     adapter_sha,
     instructions,
+    require_two=False,
 ):
     title, rank = film["title"], int(film["rank"])
     seed = 97031 + rank
@@ -265,7 +266,7 @@ def run_film(
         # checked slates are sufficient to report a genuine below-floor fallback.
         if round_number == 2 and len(checks) >= 2 and len(checks) > checked_before:
             break
-    if not checks or (adapter_sha is None and len(checks) < 2):
+    if not checks or ((adapter_sha is None or require_two) and len(checks) < 2):
         raise ValueError(
             "The model did not supply the checked nominees needed for review"
         )
@@ -370,7 +371,13 @@ def main():
     parser.add_argument(
         "--report", type=Path, help="Verified DPO report; omit for base-only inference"
     )
+    parser.add_argument("--titles", type=Path, help="One-column CSV for hosted inference")
+    parser.add_argument("--adapter-manifest", type=Path, help="Verified Hub adapter for generation")
     args = parser.parse_args()
+    if args.titles and (args.rank is not None or args.shard is not None or args.report):
+        parser.error("Choose CSV generation or a catalog/study selection")
+    if args.adapter_manifest and (args.shard is not None or args.report):
+        parser.error("Use the comparison report for a blind study")
     out = args.work / "samples"
     out.mkdir(parents=True, exist_ok=True)
     instructions = system_prompt()
@@ -388,7 +395,12 @@ def main():
         excluded = {p["film"]["title"].casefold() for p in report["preferences"]} | {
             p["film"].casefold() for p in report["generations"]
         }
-    if args.rank is None and args.shard is None:
+    if args.adapter_manifest:
+        manifest = json.loads(args.adapter_manifest.read_text())
+        if (manifest["model"], manifest["base_revision"], manifest["base_sha256"]) != (MODEL, REVISION, BASE_SHA):
+            parser.error("The published adapter belongs to another base model")
+        adapter_sha = manifest["sha256"]
+    if args.rank is None and args.shard is None and not args.titles:
         parser.error("Specify a MovieLens rank or historical shard")
     ranks = RANKS[args.shard :: 5] if args.shard is not None else [args.rank]
     if args.rank is not None and args.shard is not None:
@@ -404,7 +416,10 @@ def main():
         )
         if int(f["rank"]) in ranks
     ]
-    assert len(films) == len(ranks) and not any(
+    if args.titles:
+        from common import read_titles
+        films = [{"rank": str(i), "title": title} for i, title in enumerate(read_titles(args.titles), 1)]
+    assert films and (args.titles or len(films) == len(ranks)) and not any(
         f["title"].casefold() in excluded for f in films
     )
     bank = snapshot_bank(None, args.work)
@@ -435,7 +450,7 @@ def main():
     if not adapter_sha and available:
         raise ValueError("Base inference requires an adapter-free server")
     failures = []
-    scales = (0, 1) if adapter_sha else (0,)
+    scales = (1,) if args.adapter_manifest else (0, 1) if adapter_sha else (0,)
     for scale in scales:
         # Set the global configuration too; every inference request also specifies its own scale.
         if adapter_sha:
@@ -444,7 +459,7 @@ def main():
             ).raise_for_status()
             got = requests.get(SERVER + "/lora-adapters", timeout=30).json()
             assert got[0]["scale"] == scale
-        with ThreadPoolExecutor(max_workers=len(films)) as pool:
+        with ThreadPoolExecutor(max_workers=min(4, len(films))) as pool:
             tasks = [
                 pool.submit(
                     run_film,
@@ -457,6 +472,7 @@ def main():
                     out,
                     adapter_sha,
                     instructions,
+                    bool(args.adapter_manifest),
                 )
                 for f in films
             ]
@@ -471,13 +487,16 @@ def main():
         raise RuntimeError(f"Unfinished film trajectories: {failures}")
 
     assert len(list(out.glob("*.json.gz"))) == len(scales) * len(films)
-    if not adapter_sha:
+    if not args.report:
         with (args.work / "results.jsonl").open("w", encoding="utf-8") as output:
             for film in films:
                 with gzip.open(
-                    out / f"{int(film['rank']):03}-0.json.gz", "rt", encoding="utf-8"
+                    out / f"{int(film['rank']):03}-{scales[0]}.json.gz", "rt", encoding="utf-8"
                 ) as f:
-                    json.dump(json.load(f)["row"], output, ensure_ascii=False)
+                    row = json.load(f)["row"]
+                    if args.adapter_manifest:
+                        row["adapter_sha256"] = adapter_sha
+                    json.dump(row, output, ensure_ascii=False)
                     output.write("\n")
 
 
