@@ -3,11 +3,14 @@ on:
   workflow_dispatch:
     inputs:
       test_id:
-        description: Key ID printed by review_cycle.py train --prepare-only
+        description: Optional key ID for a legacy sealed training request
         type: string
-        required: true
+        required: false
       dataset_file:
         description: Optional deliberately committed reviews/*.jsonl; leave blank for private training
+        type: string
+      revision:
+        description: Saved Hugging Face review revision (defaults to latest)
         type: string
 permissions:
   contents: read
@@ -22,7 +25,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Load the saved reviews from Hugging Face
+        if: inputs.test_id == ''
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY }}
+          CHUCKLES_REVIEW_DATASET: ${{ vars.CHUCKLES_REVIEW_DATASET }}
+          DATA_REVISION: ${{ inputs.revision }}
+          DATA_FILE: ${{ inputs.dataset_file }}
+        run: |
+          test -z "$DATA_FILE" || { echo "Tracked CLI requests require a key ID"; exit 1; }
+          pip install -q Flask 'huggingface_hub==0.36.0'
+          python scripts/pages_studio.py train-request "$RUNNER_TEMP/chuckles" --revision "$DATA_REVISION"
       - name: Check the private or tracked preferences
+        if: inputs.test_id != ''
         env:
           DATASET_FILE: ${{ inputs.dataset_file }}
           PRIVATE_REQUEST: ${{ secrets[format('CHUCKLES_DPO_{0}', inputs.test_id)] }}
@@ -48,8 +63,23 @@ jobs:
           cd "$RUNNER_TEMP/chuckles"
           export PYTHONPATH="$GITHUB_WORKSPACE"
           python "$GITHUB_WORKSPACE/training/gguf_dpo/smoke.py" --input request.json --driver "$PWD/forward" --model model.gguf --work scratch --assets assets --output result
+      - name: Publish the checked adapter to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY }}
+          CHUCKLES_ADAPTER_REPO: ${{ vars.CHUCKLES_ADAPTER_REPO }}
+          CHUCKLES_REVIEW_DATASET: ${{ vars.CHUCKLES_REVIEW_DATASET }}
+        run: |
+          pip install -q Flask 'huggingface_hub==0.36.0'
+          target="$RUNNER_TEMP/chuckles"
+          revision=""; if [[ -f "$target/dataset-revision.txt" ]]; then revision=$(cat "$target/dataset-revision.txt"); fi
+          python scripts/pages_studio.py publish-adapter "$target/result" "$GITHUB_RUN_ID" --revision "$revision"
+      - name: Seal the legacy recipient's comparison
+        if: inputs.test_id != ''
+        run: |
+          cd "$RUNNER_TEMP/chuckles"
           python "$GITHUB_WORKSPACE/training/gguf_dpo/seal.py" request.json result "$RUNNER_TEMP/comparison.bin"
       - uses: actions/upload-artifact@v4
+        if: inputs.test_id != ''
         with:
           name: sealed-dpo-test
           path: ${{ runner.temp }}/comparison.bin

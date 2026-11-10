@@ -1,47 +1,28 @@
 # Chuckles
 
-Chuckles writes movie-title parodies for an adult audience. The working cycle is **generate → judge and comment → export DPO preferences → train an adapter → compare again**.
+Chuckles writes movie-title parodies for an adult audience. GitHub Pages hosts the reviewer, GitHub Actions runs inference and training, and Hugging Face stores the reviews and adapters.
 
-**[Open the inference form](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml)** and click **Run workflow**. The **system_prompt** field is prefilled with the exact audience instructions and judged examples. Edit it for this run. For a lasting change, edit the field’s default in [the kickoff workflow](.github/workflows/human-guidance.yml#L13) ([edit on GitHub](https://github.com/patruff/chuck26/edit/main/.github/workflows/human-guidance.yml)). Local runs read that same default. Each new run saves its prompt and prints it in the Actions summary. On RunPod, smolagents wraps the audience text with its Python and tool instructions; the trace records the complete messages.
+**[Open Review parodies](https://patruff.github.io/chuck26/)** to judge the latest completed inference. The collection menu also includes the 185-film MovieLens catalog and earlier feedback runs.
 
-The model is **0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF**, using `RVN-Q4_K_M-multilingual.gguf`. The revision, weight checksum, llama.cpp commit and RunPod image are pinned together in [config/model.json](config/model.json). A DPO run adds a LoRA to these weights.
+1. Read both pitches. Expand **Phonetic checks** or **Recorded reasoning** to inspect the original comparison.
+2. Choose **Prefer A**, **Prefer B**, or **Neither works**. Add a note if you like and continue through the queue. **Save reviews** saves your pending choices together. Reopen the page and connect to load them again.
+3. Choose **Train new adapter** to train on saved A/B choices between distinct titles. GitHub Actions pins the dataset revision, fits the LoRA, reloads it in llama.cpp, and publishes the checked GGUF to the private model repository.
+4. Choose **Run inference**, pick a catalog movie or upload a single-column CSV of titles, and select the base model or the latest published adapter. Completed pairs appear automatically in the review page. CSVs accept an optional `title` header and quoted titles containing commas.
 
-## GitHub Actions
+### Connect your accounts
 
-| Action | When to use it | What comes back |
-| --- | --- | --- |
-| [1. Generate parodies for review](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml) | Pick a [movie rank](pipeline/film_lists/top200_1990_2015.csv) and edit the audience prompt. **base-cpu** generates with the original model on a GitHub runner. **runpod** runs the smolagents CodeAgent on a rented GPU and also accepts a custom **movie** title. **compare-adapter** runs both model configurations on a held-out movie. **preview** checks the prompt, bank and historical scores without renting a GPU. | Exact prompt plus a `review-ready` artifact for base or RunPod inference, or a recipient-encrypted `sealed-review` for comparison. |
-| [2. Train a DPO adapter from reviews](https://github.com/patruff/chuck26/actions/workflows/dpo-smoke.yml) | Put the key ID from the review-export command below in **test_id**. This trains the tested rank-4 output-layer adapter on your actual A/B preferences and reloads it in llama.cpp. | Encrypted adapter and comparison report. The training run number and key ID identify the adapter in the next inference form. |
-| [3. RunPod bulk generation and resume](https://github.com/patruff/chuck26/actions/workflows/film-review-batch.yml) | Generate two independent CodeAgent trajectories per movie, or resume an interrupted shard. Leave **prompt_snapshot** blank for the current prompt. The defaults cover all eight shards. Use **shards** `[0]` with **ranks** such as `[35,45]` for a targeted batch. [Resume the historical dataset with its frozen rules](results/movielens-200/README.md#resume-the-last-15-films). | Per-side compressed checkpoints. Download a shard and point the app at its `samples/` directory. |
+The page is public. Votes, notes, full traces, and training snapshots are stored in the [private review dataset](https://huggingface.co/datasets/patruff/chuck26-reviews). Under **Connect account**, enter a Hugging Face token with write access to that dataset. A token stays in the current tab’s memory. Draft votes stay in this browser until saved.
 
-## Review film parodies and export DPO
+For one-click training and inference, also enter a fine-grained GitHub token scoped to **patruff/chuck26** with **Actions: write**. With just the Hugging Face token, **Prepare GitHub run** opens the corresponding GitHub workflow. Choose **Run workflow** and use the displayed revision to run exactly those settings.
 
-Run these commands from the checkout on macOS or Linux with Python 3.10+ and an authenticated `gh`.
+Adapters are versioned by GitHub run in the [private adapter repository](https://huggingface.co/patruff/chuck26-adapters). Each manifest identifies the base weights, adapter checksum, and training dataset. The private dataset keeps the DPO rows and comparison report from each hosted training run. [Training details](training/gguf_dpo/README.md)
 
-```sh
-python -m pip install -e '.[trace-export]'
-python scripts/review_cycle.py fetch INFERENCE_RUN
-python scripts/review_films.py
-```
+### Other workflows
 
-Open [the review app](http://127.0.0.1:5118). New runs appear as `inference-RUN`; the app also reads the [185-film catalog](results/movielens-200/CATALOG.md) and earlier feedback results. For a downloaded artifact, use `python scripts/review_films.py --input /path/to/artifact`. The original blind 15-film collection loads from `reviews/blind-27b-15/`.
-
-Read both pitches and expand their reasoning and phonetic checks. Save **Prefer A**, **Prefer B** or **Neither works**, with an optional comment. Blind comparisons also allow **Equally funny**; attribution can be revealed for that film after voting. The app writes all decisions to `reviews/film_preferences.jsonl`. Each A/B choice between distinct titles produces a row in `reviews/reviewed_dpo.jsonl` with the shared prompt, chosen title, rejected title, feedback and exact trace references. The two checked-in JSONL files are empty starters. **Download DPO** exports your local decisions. Use **Transfer reviews** to import a prior export or backup.
-
-## Train and judge the next adapter
-
-```sh
-python scripts/review_cycle.py validate "/path/to/reviewed_dpo.jsonl"
-python scripts/review_cycle.py train "/path/to/reviewed_dpo.jsonl" --key .private/dpo.pem
-```
-
-The second command creates or reuses your local recipient key, prints a **key ID**, and starts training. Use `--prepare-only` to set up the private request and launch Action 2 yourself. The request sends the actual prompt and title pairs; reviewer notes and tool traces stay in the full export. For a large export you deliberately committed to `reviews/` on GitHub main, use `--tracked` with its local path. [DPO training and model details](training/gguf_dpo/README.md)
-
-```sh
-python scripts/review_cycle.py fetch TRAINING_RUN --key .private/dpo.pem
-```
-
-This saves the native adapter and report under `reviews/adapter-RUN/`. Next, choose **compare-adapter** in Action 1, enter the **training run number** in **dpo_run**, reuse the **key ID**, and pick a film outside the training rows and earlier probes. Import the result with `python scripts/review_cycle.py fetch COMPARISON_RUN --key .private/dpo.pem`. A/B assignment is made once on import and survives app restarts. Save the artifacts locally before GitHub retention expires. To reuse an earlier sealed training run, register its matching private key with `gh secret set CHUCKLES_DPO_KEY_MYKEY -R patruff/chuck26 < .private/dpo.pem`, then use `MYKEY` as the key ID.
+- [Generate with an edited audience prompt or RunPod](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml). The prompt default also applies to hosted inference. Its model and weight revisions are [pinned in the repo](config/model.json).
+- [Generate or resume a RunPod batch](https://github.com/patruff/chuck26/actions/workflows/film-review-batch.yml). Completed pairs are archived for the page.
+- [Refresh the review page](https://github.com/patruff/chuck26/actions/workflows/review-pages.yml), optionally supplying a specific completed inference run.
+- Historical recipient-encrypted comparisons still open with their original key through [the local review tool](scripts/review_cycle.py). The [local Flask reviewer](scripts/review_films.py) also remains available for offline files.
 
 ## Words, tools and feedback
 
@@ -49,7 +30,7 @@ This saves the native adapter and report under `reviews/adapter-RUN/`. Next, cho
 - **smolagents.** Both paths load the pinned Hugging Face tools [parody-suggestions](https://huggingface.co/spaces/patruff/parody-suggestions/tree/8147e43f9acfb3af5123fd6fd329c112d8ff7a6b) and [word-phone](https://huggingface.co/spaces/patruff/word-phone/tree/044bccae4f60f213a2246e69c03558a52c6525ff). Suggestions are looked up before drafting. The [RunPod CodeAgent](pipeline/generate_march.py) calls `record_drafts` and executes `word_phone_tool` on its nominees; the [CPU runner](pipeline/blind_film_run.py) calls the same tools between model drafting and selection. Both retain the model’s returned thinking and real observations. [Colab reference](notebooks/Chuckles_RunPod.ipynb)
 - **Judging.** One good change can carry the title. A listed word and an invented word compete on the same terms. Check the exact spellings, then let the model choose by audience fit among titles clearing the inclusive March suggestion-score floor of 0.60. The separate word-phone score is displayed alongside it. If revised nominees all miss, the checked fallback is marked below floor.
 - **Human guidance.** The kickoff prompt includes selected human judgments and distinguishes a weak winner from a good joke. In **runpod** mode an optional tracked [guidance text file](guidance/human-feedback.txt) lets Qwen propose a creative addendum. The artifact records the applied revision and a `next-feedback.txt` for the next round. A push changing `guidance/human-feedback.txt` on main also starts the existing ten-title RunPod feedback run.
-- **Secrets.** RunPod uses `RUNPOD_API_KEY` and tears down each rented pod in the launcher's cleanup path. Training preparation sets `CHUCKLES_DPO_ID` (the compressed request) and `CHUCKLES_DPO_KEY_ID` (recipient key), with ID replaced by the printed suffix. Delete the request secret after training. Keep the recipient key for comparisons and local decryption. The full review export, local comparison bundles and private key stay local by default.
+- **Secrets.** RunPod uses `RUNPOD_API_KEY` and tears down each rented pod in the launcher's cleanup path. The legacy sealed request flow sets `CHUCKLES_DPO_ID` (the compressed request) and `CHUCKLES_DPO_KEY_ID` (recipient key), with ID replaced by the printed suffix. Delete the request secret after training. Keep the recipient key for comparisons and local decryption. Hosted jobs access the private Hugging Face repositories using the Actions secret `HUGGINGFACE_API_KEY`. Repository variables `CHUCKLES_REVIEW_DATASET` and `CHUCKLES_ADAPTER_REPO` can override the default destinations.
 
 This command provisions the bank secret from your verified checkout.
 
