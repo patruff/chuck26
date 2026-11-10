@@ -447,3 +447,11 @@ dialog::backdrop {
     align-items: center;
   }
 }
+
+#shared-note details {
+  margin-top: 1rem;
+  font-size: 0.9rem;
+}
+#shared-note p {
+  margin: 0.6rem 0;
+}

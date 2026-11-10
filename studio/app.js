@@ -174,6 +174,13 @@ function render() {
   const vote = selection(p.id),
     pitches = $("pitches");
   pitches.replaceChildren();
+  const sharedWhy = p.sides[0].why && p.sides[0].why === p.sides[1].why;
+  $("shared-note").replaceChildren();
+  if (sharedWhy) {
+    const note = fold("Drafting notes for both pitches");
+    note.append(node("p", p.sides[0].why, "why"));
+    $("shared-note").append(note);
+  }
   p.sides.forEach((s, i) => {
     const letter = i ? "B" : "A",
       choice = letter.toLowerCase(),
@@ -184,7 +191,7 @@ function render() {
       "pitch" + (selected ? " selected" : ""),
     );
     card.append(node("p", "Pitch " + letter, "pitch-tag"), node("h3", s.title));
-    if (s.why) card.append(node("p", s.why, "why"));
+    if (s.why && !sharedWhy) card.append(node("p", s.why, "why"));
     const evidence = node("div", undefined, "evidence"),
       checks = fold("Phonetic checks");
     const table = node("table"),
