@@ -540,7 +540,14 @@ function jobs(kind) {
     movie.value = "35";
     model = field(body, "Model", node("select"));
     model.add(option("base", "Base model"));
-    model.add(option("latest-adapter", "Latest trained adapter"));
+    const adapter = option(
+      "latest-adapter",
+      manifest.adapterAvailable
+        ? "Latest trained adapter"
+        : "Train an adapter to use it here",
+    );
+    adapter.disabled = !manifest.adapterAvailable;
+    model.add(adapter);
     upload = field(body, "Upload CSV instead (optional)", node("input"));
     upload.type = "file";
     upload.accept = ".csv,text/csv";

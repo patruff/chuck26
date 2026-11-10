@@ -303,6 +303,9 @@ def build(output):
                 movies=movies,
                 dataset=DATASET,
                 models=MODELS,
+                adapterAvailable=api.file_exists(
+                    MODELS, "latest.json", repo_type="model"
+                ),
                 repository=REPO,
                 revision=revision,
             )
@@ -452,7 +455,12 @@ def publish_adapter(result, run, revision):
 def fetch_adapter(work, revision):
     work = Path(work)
     head = api.model_info(MODELS, revision=revision or "main").sha
-    info = json.loads(hub_file("latest.json", head, MODELS, "model").read_bytes())
+    try:
+        info = json.loads(hub_file("latest.json", head, MODELS, "model").read_bytes())
+    except EntryNotFoundError as err:
+        raise ValueError(
+            "Train an adapter from saved reviews before selecting it for inference"
+        ) from err
     base = json.loads((ROOT / "config/model.json").read_bytes())
     if (info["model"], info["base_revision"], info["base_sha256"]) != (
         base["repository"],

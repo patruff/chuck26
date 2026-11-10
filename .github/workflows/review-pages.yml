@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths: ['studio/**', 'scripts/pages_studio.py', '.github/workflows/review-pages.yml', 'results/**']
   workflow_run:
-    workflows: ['1. Generate parodies for review', '3. RunPod bulk generation and resume', 'Run inference']
+    workflows: ['1. Generate parodies for review', '3. RunPod bulk generation and resume', 'Run inference', '2. Train a DPO adapter from reviews']
     types: [completed]
     branches: [main]
 permissions:
