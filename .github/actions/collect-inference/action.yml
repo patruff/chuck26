@@ -1,0 +1,49 @@
+name: Collect ordered inference results
+description: Verify all batches and publish the standard review artifact
+inputs:
+  mode:
+    description: Inference backend
+    required: true
+  key:
+    description: Recipient key for sealed comparisons
+    required: false
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: inference-input
+        path: selection
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: ${{ inputs.mode == 'compare-adapter' && 'sealed-part-*' || 'review-part-*' }}
+        path: batches
+    - if: inputs.mode != 'compare-adapter'
+      shell: bash
+      run: python -m pipeline.film_lists.merge_reviews selection batches combined/results.jsonl
+    - if: inputs.mode == 'compare-adapter'
+      shell: bash
+      env:
+        RECIPIENT_PRIVATE_KEY: ${{ inputs.key }}
+      run: |
+        python -m pip install -q cryptography
+        mkdir -p combined
+        for part in selection/part-*.csv; do
+          name=$(basename "$part" .csv)
+          python -m pipeline.blind_artifact restore combined "batches/sealed-$name/films.bin"
+        done
+        python - <<'PY'
+        import csv
+        from pathlib import Path
+        with open('selection/selected.csv', newline='') as source:
+            expected = {f"{int(r['rank']):03}-{side}.json.gz" for r in csv.DictReader(source) for side in (0, 1)}
+        if expected != {p.name for p in Path('combined/samples').glob('*.json.gz')}:
+            raise SystemExit("Missing or unexpected sealed comparisons")
+        PY
+        python -m pipeline.blind_artifact pack combined combined/films.bin
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.mode == 'compare-adapter' && 'sealed-review' || 'review-ready' }}
+        path: ${{ inputs.mode == 'compare-adapter' && 'combined/films.bin' || 'combined/results.jsonl' }}
+        overwrite: true
+        if-no-files-found: error

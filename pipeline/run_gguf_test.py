@@ -20,6 +20,7 @@ import uuid
 import requests
 from march_source import BANK_URL, NOTEBOOK, preflight, snapshot_bank
 from human_guidance import prepare_guidance
+from common import read_titles
 from runpod_startup import PODS, wait_ready
 
 PIPELINE = Path(__file__).resolve().parent
@@ -85,7 +86,7 @@ def main(private_dir):
     movies = p.add_mutually_exclusive_group()
     movies.add_argument("--titles", type=Path, help="Input CSV with a title column")
     movies.add_argument("--title", help="Run just this movie")
-    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--limit", type=int, help="Optional cap. An explicit titles CSV defaults to every row.")
     p.add_argument("--output-dir", type=Path, help="New directory for this run")
     p.add_argument("--preflight-only", action="store_true", help="Verify the 2025 bank and tools on CPU and exit")
     p.add_argument("--march-word-bank", type=Path, metavar="WORD_STRUCTURES.PY",
@@ -158,7 +159,15 @@ def main(private_dir):
         args.limit = 1
     if args.titles is None:
         args.titles = PIPELINE / "humor_sample_titles.csv"
-    if min(args.limit, args.timeout_mins, args.startup_timeout_mins) < 1 or not args.titles.is_file():
+    if not args.titles.is_file():
+        p.error("The titles CSV does not exist")
+    try:
+        count = len(read_titles(args.titles))
+    except (OSError, csv.Error, ValueError) as exc:
+        p.error(str(exc))
+    if args.limit is None:
+        args.limit = count
+    if not count or min(args.limit, args.timeout_mins, args.startup_timeout_mins) < 1:
         p.error("Use an existing titles CSV, a positive limit and a positive timeout")
     if not os.getenv("RUNPOD_API_KEY"):
         p.error("RUNPOD_API_KEY is required")

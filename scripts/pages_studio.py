@@ -4,7 +4,6 @@ import argparse
 import csv
 import gzip
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -20,6 +19,7 @@ from huggingface_hub.errors import EntryNotFoundError
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from pipeline.review_request import make_request
+from pipeline.film_lists.select_film import catalog_films, csv_titles, parse_ranks, publish_batches, title_rows, write_batches
 from scripts.review_films import DEFAULT_SOURCES, ReviewStore, load_source, write_lines
 
 DATASET = os.getenv("CHUCKLES_REVIEW_DATASET") or "patruff/chuck26-reviews"
@@ -475,39 +475,7 @@ def fetch_adapter(work, revision):
     (work / "adapter-manifest.json").write_bytes(encode(info))
 
 
-def csv_titles(payload):
-    rows = list(
-        csv.reader(io.StringIO(payload.decode("utf-8-sig"), newline=""), strict=True)
-    )
-    rows = [r for r in rows if r and any(s.strip() for s in r)]
-    if any(len(r) != 1 for r in rows):
-        raise ValueError("Use a single column; quote titles containing commas")
-    titles = [r[0].strip() for r in rows]
-    if titles and titles[0].casefold() in {
-        "title",
-        "movie",
-        "input",
-        "parody",
-        "input parody",
-        "input parodies",
-        "input_title",
-    }:
-        titles.pop(0)
-    if not titles or any(not t or "\n" in t or "\r" in t for t in titles):
-        raise ValueError("Expected one nonempty title per row")
-    return titles
-
-
-def prepare_csv(revision, output):
-    data = hub_file("inputs/latest.csv", revision or "main").read_bytes()
-    titles = csv_titles(data)
-    with Path(output).open("w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["title"])
-        writer.writerows([s] for s in titles)
-
-
-def inference_settings(work, source, rank, model, revision):
+def inference_settings(work, source, rank, model, revision, *, batches=False):
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
     revision = api.dataset_info(DATASET, revision=revision or "main").sha
@@ -521,11 +489,25 @@ def inference_settings(work, source, rank, model, revision):
         source, rank, model = request["source"], request["rank"], request["model"]
     if source not in {"csv", "catalog"} or model not in {"base", "latest-adapter"}:
         raise ValueError("Unsupported inference settings")
-    if not 1 <= int(rank) <= 200:
-        raise ValueError("Choose a catalog rank between 1 and 200")
-    (work / "rank.txt").write_text(str(int(rank)))
     if source == "csv":
-        prepare_csv(revision, work / "input.csv")
+        titles = csv_titles(hub_file("inputs/latest.csv", revision).read_bytes())
+        rows = title_rows(titles)
+    else:
+        rows = catalog_films(parse_ranks(rank))
+    if batches:
+        parts = write_batches(work, rows, 5)
+        publish_batches(parts, len(rows))
+        if model == "latest-adapter":
+            head = api.model_info(MODELS).sha
+            (work / "adapter-revision.txt").write_text(head)
+        return
+    # Preserve files consumed by previous local uses of the inference-settings CLI.
+    (work / "rank.txt").write_text(str(rank))
+    if source == "csv" or len(rows) > 1:
+        with (work / "input.csv").open("w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["title"])
+            writer.writerows([r["title"]] for r in rows)
     if model == "latest-adapter":
         fetch_adapter(work, None)
 
@@ -544,7 +526,11 @@ if __name__ == "__main__":
     s.add_argument("result")
     s.add_argument("run")
     s.add_argument("--revision", default="")
+    s = sub.add_parser("fetch-adapter")
+    s.add_argument("work")
+    s.add_argument("revision")
     s = sub.add_parser("inference-settings")
+    s.add_argument("--batches", action="store_true")
     s.add_argument("work")
     for field in ("source", "rank", "model", "revision"):
         s.add_argument("--" + field, required=True)
@@ -557,5 +543,7 @@ if __name__ == "__main__":
         training_request(args.revision, args.work)
     elif args.op == "publish-adapter":
         publish_adapter(args.result, args.run, args.revision)
+    elif args.op == "fetch-adapter":
+        fetch_adapter(args.work, args.revision)
     elif args.op == "inference-settings":
-        inference_settings(args.work, args.source, args.rank, args.model, args.revision)
+        inference_settings(args.work, args.source, args.rank, args.model, args.revision, batches=args.batches)

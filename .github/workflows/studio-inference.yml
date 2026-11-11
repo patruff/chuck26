@@ -8,7 +8,7 @@ on:
         type: choice
         options: [page, catalog, csv]
       rank:
-        description: MovieLens rank (1–200) for a catalog run
+        description: MovieLens ranks (1–200). Examples 35, 1-100, or 1-5,12,35-40.
         default: '35'
         type: string
       revision:
@@ -21,9 +21,11 @@ on:
 permissions:
   contents: read
 jobs:
-  generate:
+  select:
     runs-on: ubuntu-24.04
-    timeout-minutes: 330
+    outputs:
+      parts: ${{ steps.select.outputs.parts }}
+      part_count: ${{ steps.select.outputs.part_count }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,6 +34,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Resolve input titles and selected adapter
+        id: select
         env:
           HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY }}
           CHUCKLES_REVIEW_DATASET: ${{ vars.CHUCKLES_REVIEW_DATASET }}
@@ -42,20 +45,50 @@ jobs:
           RANK: ${{ inputs.rank }}
         run: |
           pip install -q Flask PyYAML 'huggingface_hub==0.36.0'
-          target="$RUNNER_TEMP/chuckles"; mkdir -p "$target"
-          python scripts/pages_studio.py inference-settings "$target" --source "$SOURCE" --revision "$REVISION" --model "$MODEL" --rank "$RANK"
+          python scripts/pages_studio.py inference-settings selection --batches --source "$SOURCE" --revision "$REVISION" --model "$MODEL" --rank "$RANK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inference-input
+          path: selection/
+          overwrite: true
+  generate:
+    needs: select
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        part: ${{ fromJSON(needs.select.outputs.parts) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: inference-input
+          path: selection
       - uses: ./.github/actions/native-gguf
         with:
           target: server
       - run: pip install -q -e '.[trace-export]'
+      - name: Load the selected adapter revision
+        if: hashFiles('selection/adapter-revision.txt') != ''
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY }}
+          CHUCKLES_ADAPTER_REPO: ${{ vars.CHUCKLES_ADAPTER_REPO }}
+        run: python scripts/pages_studio.py fetch-adapter "$RUNNER_TEMP/chuckles" "$(cat selection/adapter-revision.txt)"
       - name: Generate and check the pitches
         env:
           CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
+          PART: ${{ matrix.part }}
         run: |
           set -eu
           target="$RUNNER_TEMP/chuckles"
-          args=(--rank "$(cat "$target/rank.txt")"); lora=()
-          if [[ -f "$target/input.csv" ]]; then args=(--titles "$target/input.csv"); fi
+          args=(--selection "selection/$PART.csv"); lora=()
           if [[ -f "$target/adapter.gguf" ]]; then
             lora=(--lora "$target/adapter.gguf" --lora-init-without-apply)
             args+=(--adapter-manifest "$target/adapter-manifest.json")
@@ -65,6 +98,19 @@ jobs:
           python pipeline/blind_film_run.py --work "$target" "${args[@]}"
       - uses: actions/upload-artifact@v4
         with:
-          name: review-ready
+          name: ${{ needs.select.outputs.part_count == '1' && 'review-ready' || format('review-{0}', matrix.part) }}
+          overwrite: true
           path: ${{ runner.temp }}/chuckles/results.jsonl
           if-no-files-found: error
+  collect:
+    needs: [select, generate]
+    if: needs.select.outputs.part_count != '1'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: ./.github/actions/collect-inference
+        with:
+          mode: studio

@@ -503,6 +503,15 @@ function validateCsv(text) {
   if (!titles.length || titles.some((title) => !title))
     throw Error("The CSV needs at least one title and one column.");
 }
+function validateRanks(text) {
+  for (const part of text.split(",")) {
+    const m = /^\s*([0-9]{1,3})(?:\s*[-–]\s*([0-9]{1,3}))?\s*$/.exec(part);
+    const first = Number(m?.[1]), last = Number(m?.[2] ?? m?.[1]);
+    if (!m || first < 1 || last > 200 || last < first)
+      throw Error("Enter ranks from 1 to 200, such as 35, 1-100, or 1-5,12.");
+  }
+  return text.trim();
+}
 function jobs(kind) {
   if (!hub) {
     connect(() => jobs(kind));
@@ -510,7 +519,6 @@ function jobs(kind) {
   }
   const train = kind === "train",
     body = modal(train ? "Train new adapter" : "Run inference");
-  const file = train ? "dpo-smoke.yml" : "studio-inference.yml";
   const count = [...saved.values()].filter(
     (v) => ["a", "b"].includes(v.choice) && v.titles?.[0] !== v.titles?.[1],
   ).length;
@@ -534,12 +542,18 @@ function jobs(kind) {
       ),
     );
   } else {
-    movie = field(body, "Catalog movie", node("select"));
+    movie = field(body, "Movie ranks", node("input"));
+    movie.setAttribute("list", "catalog-ranks");
+    movie.placeholder = "35, 1-100, or 1-5,12";
+    const catalog = node("datalist");
+    catalog.id = "catalog-ranks";
     for (const m of manifest.movies)
-      movie.add(option(m.rank, m.rank + " · " + m.title));
+      catalog.append(option(m.rank, m.rank + " · " + m.title));
+    body.append(catalog);
     movie.value = "35";
     model = field(body, "Model", node("select"));
     model.add(option("base", "Base model"));
+    model.add(option("runpod", "Base model on RunPod GPU"));
     const adapter = option(
       "latest-adapter",
       manifest.adapterAvailable
@@ -557,7 +571,7 @@ function jobs(kind) {
     body.append(
       node(
         "p",
-        "Use one title per row. Quote titles containing commas. Input titles and the generated pitches appear on the public page.",
+        "Choose a rank, enter a range such as 1-100, or mix ranges and ranks with commas. A CSV takes one input per row. Quote inputs containing commas. Inputs and generated pitches appear on the public page.",
         "hint",
       ),
     );
@@ -572,6 +586,8 @@ function jobs(kind) {
     async () => {
       button.disabled = true;
       try {
+        const runpod = !train && model.value === "runpod";
+        const file = train ? "dpo-smoke.yml" : runpod ? "human-guidance.yml" : "studio-inference.yml";
         let revision = train ? savedRevision : await hub.head(),
           inputs;
         if (train) inputs = { revision };
@@ -579,8 +595,8 @@ function jobs(kind) {
           const csv = upload.files[0];
           const req = {
             source: csv ? "csv" : "catalog",
-            rank: movie.value,
-            model: model.value,
+            rank: csv ? "35" : validateRanks(movie.value),
+            model: runpod ? "base" : model.value,
           };
           const files = { "requests/inference.json": JSON.stringify(req) };
           if (csv) {
@@ -593,7 +609,8 @@ function jobs(kind) {
             revision,
             "Prepare inference inputs",
           );
-          inputs = { ...req, revision };
+          inputs = runpod ? { mode: "runpod", rank: req.rank } : { ...req, revision };
+          if (runpod && csv) inputs.csv_revision = revision;
         }
         if (gitToken) {
           await dispatch(file, inputs);
@@ -604,18 +621,16 @@ function jobs(kind) {
             "span",
             train
               ? "Open GitHub and choose Run workflow to train from the saved reviews."
-              : "Open GitHub and choose Run workflow with “page” as the source to use these settings.",
+              : runpod
+                ? "Choose Run workflow, set mode to runpod, and enter " +
+                  (inputs.csv_revision ? "csv_revision " + revision : "rank " + inputs.rank) + "."
+                : "Open GitHub and choose Run workflow with “page” as the source to use these settings.",
           ),
           node("br"),
           link("Open GitHub workflow ↗", workflowUrl(file)),
-          node("br"),
-          node(
-            "span",
-            "To pin this exact dataset snapshot, use revision " +
-              revision +
-              ".",
-          ),
         );
+        if (!runpod)
+          note.append(node("br"), node("span", "Use revision " + revision + " for this dataset snapshot."));
       } catch (e) {
         note.textContent = e.message;
       } finally {

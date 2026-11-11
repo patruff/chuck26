@@ -7,7 +7,7 @@ Chuckles writes movie-title parodies for an adult audience. GitHub Pages hosts t
 1. Read both pitches. Expand **Phonetic checks** or **Recorded reasoning** to inspect the original comparison.
 2. Choose **Prefer A**, **Prefer B**, or **Neither works**. Add a note if you like and continue through the queue. **Save reviews** saves your pending choices together. Reopen the page and connect to load them again.
 3. Choose **Train new adapter** to train on saved A/B choices between distinct titles. GitHub Actions pins the dataset revision, fits the LoRA, reloads it in llama.cpp, and publishes the checked GGUF to the private model repository.
-4. Choose **Run inference**, pick a catalog movie or upload a single-column CSV of titles, and select the base model or the latest published adapter. Completed pairs appear automatically in the review page. CSVs accept an optional `title` header and quoted titles containing commas.
+4. Choose **Run inference**, enter movie ranks such as `35`, `1-100`, or `1-5,12,35-40`, or upload a one-column CSV. Choose the base model, the latest published adapter, or **Base model on RunPod GPU**. Completed pairs appear automatically in the review page. A CSV accepts an optional `input` or `title` header. Put one input on each row and quote inputs containing commas.
 
 ### Connect your accounts
 
@@ -20,6 +20,7 @@ Adapters are versioned by GitHub run in the [private adapter repository](https:/
 ### Other workflows
 
 - [Generate with an edited audience prompt or RunPod](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml). The prompt default also applies to hosted inference. Its model and weight revisions are [pinned in the repo](config/model.json).
+- In the inference Action, use **rank** for inclusive ranges and comma-separated lists. Overlapping ranks are processed once, in the order entered. **csv_file** accepts a committed CSV path and **csv_revision** accepts the dataset revision from a review-page upload. **preview** produces an `inference-input/selected.csv` artifact before renting a pod. RunPod processes up to 25 inputs per pod, one pod at a time. The Action combines all successful batches into one ordered review collection. If a batch fails, its diagnostics and the completed batch artifacts remain available, and GitHub’s **Re-run failed jobs** retries that work.
 - [Generate or resume a RunPod batch](https://github.com/patruff/chuck26/actions/workflows/film-review-batch.yml). Completed pairs are archived for the page.
 - RunPod allows up to 12 minutes for the host to start the container and up to 8 minutes from container startup for the model to load, with an 18-minute overall startup limit. The pod downloads the weights in eight parallel ranges and verifies the assembled file against the pinned SHA-256. The Actions log reports the stage and downloaded bytes. For a single run, download `runpod-diagnostics` for the last startup state, elapsed time and teardown confirmation. Bulk runs store the same `run.json` in the shard artifact.
 - [Refresh the review page](https://github.com/patruff/chuck26/actions/workflows/review-pages.yml), optionally supplying a specific completed inference run.

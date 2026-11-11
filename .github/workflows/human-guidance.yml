@@ -25,11 +25,17 @@ on:
           • Forrest Gump: Forrest Dump beat Forest Dump. This vote kept Forrest intact. There was no written comment. It was too tame, both choices were not ideal, too boring. Hump or pump or other funnier words could have been chosen.
           • Jurassic Park: Jurassic Pork beat Jurassic Dark, but the reviewer still called it “Pretty bad and tame, not great”. Winning a weak pair is a reason to try a stronger pitch. It's better to fail spectacularly than be tame or boring.
       rank:
-        description: MovieLens rank (1–200)
+        description: MovieLens ranks (1–200). Examples 35, 1-100, or 1-5,12,35-40.
         default: '35'
         type: string
       movie:
-        description: RunPod only. Optional movie title to use instead of rank.
+        description: Optional single title instead of MovieLens ranks.
+        type: string
+      csv_file:
+        description: Optional repo-relative one-column CSV instead of ranks (input or title header, or no header).
+        type: string
+      csv_revision:
+        description: Optional review-dataset commit containing the CSV uploaded through Review parodies.
         type: string
       feedback_file:
         description: Optional tracked guidance/*.txt with HUMAN_FEEDBACK for the RunPod prompt editor
@@ -46,12 +52,66 @@ permissions:
 jobs:
   prompt:
     runs-on: ubuntu-24.04
+    outputs:
+      parts: ${{ steps.select.outputs.parts }}
+      part_count: ${{ steps.select.outputs.part_count }}
+      count: ${{ steps.select.outputs.count }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: pip install --quiet PyYAML
+      - name: Read the uploaded CSV at its saved revision
+        if: inputs.csv_revision != ''
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACE_API_KEY }}
+          DATASET: ${{ vars.CHUCKLES_REVIEW_DATASET || 'patruff/chuck26-reviews' }}
+          REVISION: ${{ inputs.csv_revision }}
+        run: |
+          [[ "$REVISION" =~ ^[a-fA-F0-9]{40}$ ]] || { echo 'Enter the dataset commit from the review page.' >&2; exit 1; }
+          pip install -q 'huggingface_hub==0.36.0'
+          python - <<'PY'
+          import os, shutil
+          from huggingface_hub import hf_hub_download
+          file = hf_hub_download(os.environ["DATASET"], "inputs/latest.csv", repo_type="dataset", revision=os.environ["REVISION"])
+          shutil.copyfile(file, os.path.join(os.environ["RUNNER_TEMP"], "uploaded.csv"))
+          PY
+      - name: Resolve and batch the requested titles
+        id: select
+        env:
+          FILM_RANK: ${{ inputs.rank }}
+          MOVIE: ${{ inputs.movie }}
+          CSV_FILE: ${{ inputs.csv_file }}
+          CSV_REVISION: ${{ inputs.csv_revision }}
+          MODE: ${{ inputs.mode }}
+          EVENT: ${{ github.event_name }}
+        shell: bash
+        run: |
+          args=()
+          size=25
+          if [[ "$MODE" == base-cpu || "$MODE" == compare-adapter ]]; then size=5; fi
+          if [[ "$EVENT" == push ]]; then CSV_FILE=pipeline/humor_sample_titles.csv; fi
+          if [[ "$MODE" == compare-adapter && ( -n "$CSV_FILE" || -n "$CSV_REVISION" || -n "$MOVIE" ) ]]; then
+            echo 'For a blind adapter comparison, enter held-out MovieLens ranks.' >&2; exit 1
+          fi
+          if [[ -n "$CSV_REVISION" ]]; then
+            [[ -z "$CSV_FILE" && -z "$MOVIE" ]] || { echo 'Choose only one CSV or single-title source.' >&2; exit 1; }
+            args+=(--csv "$RUNNER_TEMP/uploaded.csv")
+          elif [[ -n "$CSV_FILE" ]]; then
+            [[ -z "$MOVIE" ]] || { echo 'Choose either a CSV or a single movie.' >&2; exit 1; }
+            [[ "$CSV_FILE" != /* && "$(realpath -e -- "$CSV_FILE")" == "$GITHUB_WORKSPACE"/*.csv ]] || { echo 'Enter a CSV file path in this repository.' >&2; exit 1; }
+            git --literal-pathspecs ls-files --error-unmatch -- "$CSV_FILE" >/dev/null
+            args+=(--csv "$CSV_FILE")
+          elif [[ -n "$MOVIE" ]]; then
+            args+=(--movie="$MOVIE")
+          fi
+          python -m pipeline.film_lists.select_film "${FILM_RANK:-35}" --output-dir selection --batch-size "$size" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inference-input
+          path: selection/
+          overwrite: true
       - name: Show the prompt and pinned model
         env:
           CHUCKLES_PROMPT_OVERRIDE: ${{ inputs.system_prompt }}
@@ -71,7 +131,12 @@ jobs:
     needs: prompt
     if: github.event_name == 'push' || inputs.mode == 'runpod'
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        part: ${{ fromJSON(needs.prompt.outputs.parts) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -82,21 +147,20 @@ jobs:
           name: system-prompt
           path: prompt
       - run: pip install -q -e '.[trace-export]'
+      - uses: actions/download-artifact@v4
+        with:
+          name: inference-input
+          path: selection
       - name: Run the smolagents CodeAgent on RunPod
         env:
           CHUCKLES_PROMPT_FILE: ${{ github.workspace }}/prompt/system-prompt.txt
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
           FEEDBACK_FILE: ${{ github.event_name == 'push' && 'guidance/human-feedback.txt' || inputs.feedback_file }}
-          MOVIE_TITLE: ${{ inputs.movie }}
-          FILM_RANK: ${{ inputs.rank }}
+          PART: ${{ matrix.part }}
+          TIMEOUT_MINS: ${{ fromJSON(needs.prompt.outputs.count) > 10 && 215 || 80 }}
         run: |
-          options=()
-          if [[ -n "$MOVIE_TITLE" ]]; then
-            options+=(--title "$MOVIE_TITLE")
-          elif [[ -n "$FILM_RANK" ]]; then
-            options+=(--title "$(python -m pipeline.film_lists.select_film "$FILM_RANK")")
-          fi
+          options=(--titles "selection/$PART.csv" --timeout-mins "$TIMEOUT_MINS")
           if [[ -n "$FEEDBACK_FILE" ]]; then
             [[ "$(realpath -e -- "$FEEDBACK_FILE")" == "$GITHUB_WORKSPACE"/guidance/*.txt ]]
             git --literal-pathspecs ls-files --error-unmatch -- "$FEEDBACK_FILE"
@@ -107,13 +171,13 @@ jobs:
         if: always() && hashFiles('out/run/run.json') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: runpod-diagnostics
+          name: ${{ needs.prompt.outputs.part_count == '1' && 'runpod-diagnostics' || format('runpod-diagnostics-{0}', matrix.part) }}
           path: out/run/run.json
           overwrite: true
       - uses: actions/upload-artifact@v4
         if: always() && hashFiles('out/run/results.jsonl') != ''
         with:
-          name: review-ready
+          name: ${{ needs.prompt.outputs.part_count == '1' && 'review-ready' || format('review-{0}', matrix.part) }}
           overwrite: true
           path: |
             out/run/results.jsonl
@@ -132,9 +196,13 @@ jobs:
     if: inputs.mode == 'base-cpu' || inputs.mode == 'compare-adapter'
     runs-on: ubuntu-24.04
     timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        part: ${{ fromJSON(needs.prompt.outputs.parts) }}
     env:
       MODE: ${{ inputs.mode }}
-      FILM_RANK: ${{ inputs.rank }}
       PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v4
@@ -150,13 +218,15 @@ jobs:
           ADAPTER_RUN: ${{ inputs.dpo_run }}
           KEY_ID: ${{ inputs.key_id }}
           EDITOR_FILE: ${{ inputs.feedback_file }}
-          MOVIE_TITLE: ${{ inputs.movie }}
         run: |
-          python -m pipeline.film_lists.select_film "$FILM_RANK"
-          if [[ -n "$EDITOR_FILE" || -n "$MOVIE_TITLE" ]]; then echo "Custom titles and the optional feedback editor use RunPod mode."; exit 1; fi
+          if [[ -n "$EDITOR_FILE" ]]; then echo "The optional feedback editor uses RunPod mode."; exit 1; fi
           if [[ "$MODE" == compare-adapter ]]; then
             [[ "$ADAPTER_RUN" =~ ^[0-9]+$ && "$KEY_ID" =~ ^[A-Za-z0-9_]+$ ]] || { echo "Enter a DPO training run and key ID."; exit 1; }
           fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: inference-input
+          path: selection
       - uses: actions/download-artifact@v4
         if: inputs.mode == 'compare-adapter'
         with:
@@ -175,6 +245,7 @@ jobs:
         run: python -m pipeline.blind_artifact prepare "$RUNNER_TEMP/chuckles" private-input/comparison.bin
       - name: Draft, check the phonetics and select the funniest title
         env:
+          PART: ${{ matrix.part }}
           CHUCKLES_PROMPT_FILE: ${{ github.workspace }}/prompt/system-prompt.txt
           CHUCKLES_2025_BANK_GZ: ${{ secrets.CHUCKLES_2025_BANK_GZ }}
         run: |
@@ -187,11 +258,12 @@ jobs:
           env -u CHUCKLES_2025_BANK_GZ "$target/build/bin/llama-server" --model "$target/model.gguf" --alias film-review "${adapter[@]}" --host 127.0.0.1 --port 8080 --jinja --reasoning-format deepseek --reasoning-budget 48 -np 1 -c 2048 -t 4 -tb 4 > "$target/server.log" 2>&1 &
           server=$!
           trap 'kill "$server" 2>/dev/null || true' EXIT
-          python pipeline/blind_film_run.py --rank "$FILM_RANK" --work "$target" "${extra[@]}"
+          python pipeline/blind_film_run.py --selection "selection/$PART.csv" --work "$target" "${extra[@]}"
       - uses: actions/upload-artifact@v4
         if: inputs.mode == 'base-cpu'
         with:
-          name: review-ready
+          name: ${{ needs.prompt.outputs.part_count == '1' && 'review-ready' || format('review-{0}', matrix.part) }}
+          overwrite: true
           path: ${{ runner.temp }}/chuckles/results.jsonl
           if-no-files-found: error
       - name: Seal both model traces
@@ -202,7 +274,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: inputs.mode == 'compare-adapter'
         with:
-          name: sealed-review
+          name: ${{ needs.prompt.outputs.part_count == '1' && 'sealed-review' || format('sealed-{0}', matrix.part) }}
+          overwrite: true
           path: ${{ runner.temp }}/films.bin
           if-no-files-found: error
       - name: Open this run for judging
@@ -214,3 +287,18 @@ jobs:
           else
             echo "[Open Review parodies](https://patruff.github.io/chuck26/) to judge the completed pitches." >> "$GITHUB_STEP_SUMMARY"
           fi
+  collect:
+    needs: [prompt, runpod, cpu]
+    if: >-
+      always() && !cancelled() && needs.prompt.outputs.part_count != '1' &&
+      (needs.runpod.result == 'success' || needs.cpu.result == 'success')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: ./.github/actions/collect-inference
+        with:
+          mode: ${{ inputs.mode }}
+          key: ${{ inputs.mode == 'compare-adapter' && secrets[format('CHUCKLES_DPO_KEY_{0}', inputs.key_id)] || '' }}

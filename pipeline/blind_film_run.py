@@ -371,9 +371,12 @@ def main():
     parser.add_argument(
         "--report", type=Path, help="Verified DPO report; omit for base-only inference"
     )
+    parser.add_argument("--selection", type=Path, help="Validated inference batch with original ranks and titles")
     parser.add_argument("--titles", type=Path, help="One-column CSV for hosted inference")
     parser.add_argument("--adapter-manifest", type=Path, help="Verified Hub adapter for generation")
     args = parser.parse_args()
+    if args.selection and (args.titles or args.rank is not None or args.shard is not None):
+        parser.error("Choose a prepared selection or another title source")
     if args.titles and (args.rank is not None or args.shard is not None or args.report):
         parser.error("Choose CSV generation or a catalog/study selection")
     if args.adapter_manifest and (args.shard is not None or args.report):
@@ -400,7 +403,7 @@ def main():
         if (manifest["model"], manifest["base_revision"], manifest["base_sha256"]) != (MODEL, REVISION, BASE_SHA):
             parser.error("The published adapter belongs to another base model")
         adapter_sha = manifest["sha256"]
-    if args.rank is None and args.shard is None and not args.titles:
+    if args.rank is None and args.shard is None and not args.titles and not args.selection:
         parser.error("Specify a MovieLens rank or historical shard")
     ranks = RANKS[args.shard :: 5] if args.shard is not None else [args.rank]
     if args.rank is not None and args.shard is not None:
@@ -409,19 +412,22 @@ def main():
         if args.rank not in RANKS and args.shard != 0:
             parser.error("Run an additional held-out film on shard 0")
         ranks = [args.rank]
-    films = [
-        f
-        for f in csv.DictReader(
-            (ROOT / "pipeline/film_lists/top200_1990_2015.csv").open()
-        )
-        if int(f["rank"]) in ranks
-    ]
-    if args.titles:
+    if args.selection:
+        with args.selection.open(newline="", encoding="utf-8") as source:
+            films = list(csv.DictReader(source))
+        if args.report and any(not f.get("movielens_id") for f in films):
+            parser.error("Blind comparisons require catalog movies with MovieLens metadata")
+    elif args.titles:
         from common import read_titles
         films = [{"rank": str(i), "title": title} for i, title in enumerate(read_titles(args.titles), 1)]
-    assert films and (args.titles or len(films) == len(ranks)) and not any(
-        f["title"].casefold() in excluded for f in films
-    )
+    else:
+        from film_lists.select_film import catalog_films
+        films = catalog_films(ranks)
+    if not films or len({f["rank"] for f in films}) != len(films):
+        parser.error("An inference batch needs titles with unique ranks")
+    overlaps = [f["title"] for f in films if f["title"].casefold() in excluded]
+    if overlaps:
+        parser.error("Choose held-out films. Training or probe overlap: " + ", ".join(overlaps))
     bank = snapshot_bank(None, args.work)
     words, phones = load_word_bank(bank)
     assert len(words) == len(phones) == 1565

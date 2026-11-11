@@ -1,5 +1,6 @@
 """Title alignment and the March phonetic score used by both inference paths."""
 import csv
+from pathlib import Path
 import string
 from typing import Any
 
@@ -7,10 +8,15 @@ MIN_PHONETIC_SCORE = 0.6
 
 
 def read_titles(csv_path: str) -> list[str]:
-    with open(csv_path, encoding="utf-8") as f:
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None or "title" not in reader.fieldnames:
-            raise ValueError(f"{csv_path} must have a 'title' column")
+            # The public upload accepts a single named or headerless input column.
+            if __package__:
+                from .film_lists.select_film import csv_titles
+            else:
+                from film_lists.select_film import csv_titles
+            return csv_titles(Path(csv_path).read_bytes())
         return [row["title"].strip() for row in reader if row.get("title", "").strip()]
 
 
