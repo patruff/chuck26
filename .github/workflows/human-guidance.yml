@@ -103,10 +103,18 @@ jobs:
             options+=(--human-guidance "$FEEDBACK_FILE")
           fi
           python pipeline/run_gguf_test.py --output-dir out/run "${options[@]}"
+      - name: Save pod startup and teardown diagnostics
+        if: always() && hashFiles('out/run/run.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: runpod-diagnostics
+          path: out/run/run.json
+          overwrite: true
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && hashFiles('out/run/results.jsonl') != ''
         with:
           name: review-ready
+          overwrite: true
           path: |
             out/run/results.jsonl
             out/run/prompt-revision.json

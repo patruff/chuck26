@@ -19,11 +19,11 @@ import uuid
 import requests
 from march_source import BANK_URL, NOTEBOOK, preflight, snapshot_bank
 from human_guidance import prepare_guidance
+from runpod_startup import PODS, wait_ready
 
 PIPELINE = Path(__file__).resolve().parent
 from settings import MODEL, REVISION, FILENAME, SHA256, MODEL_CONFIG, live_revision
 IMAGE = MODEL_CONFIG["runpod_image"]
-PODS = "https://rest.runpod.io/v1/pods"
 
 
 def utc_now():
@@ -33,13 +33,18 @@ def utc_now():
 def pod_config(name, server_key, gpu, cloud, reasoning_budget, context, slots=1):
     url = f"https://huggingface.co/{MODEL}/resolve/{REVISION}/{FILENAME}"
     boot = (
-        "set -eu; /app/llama-server --list-devices > /tmp/devices 2>&1; cat /tmp/devices; "
-        "grep -q 'CUDA0:' /tmp/devices; "
-        f"curl -fL --retry 3 -o /tmp/model.gguf '{url}'; "
-        f"echo '{SHA256}  /tmp/model.gguf' | sha256sum -c -; "
-        f"exec /app/llama-server -m /tmp/model.gguf --alias {MODEL} "
+        'set -eu; stage() { echo "CHUCKLES_BOOT $1"; }; '
+        'failed() { echo "CHUCKLES_BOOT failed $1 $2"; exit "$2"; }; '
+        'stage cuda; /app/llama-server --list-devices > /tmp/devices 2>&1 || failed cuda "$?"; '
+        'cat /tmp/devices; grep -q "CUDA0:" /tmp/devices || failed cuda "$?"; '
+        'stage download; curl -fsSL --connect-timeout 15 --speed-limit 16384 --speed-time 45 '
+        '--max-time 480 --retry 2 --retry-max-time 480 '
+        "-w 'CHUCKLES_DOWNLOAD http=%{http_code} bytes=%{size_download}\\n' "
+        f'-o /tmp/model.gguf "{url}?download=true&boot=$(date +%s)" || failed download "$?"; '
+        f"stage checksum; echo '{SHA256}  /tmp/model.gguf' | sha256sum -c - || failed checksum \"$?\"; "
+        f"stage load; /app/llama-server -m /tmp/model.gguf --alias {MODEL} "
         "--host 0.0.0.0 --port 8080 --jinja --reasoning-format deepseek "
-        f"--device CUDA0 --reasoning-budget {reasoning_budget} -ngl 99 -c {context * slots} -np {slots}"
+        f'--device CUDA0 --reasoning-budget {reasoning_budget} -ngl 99 -c {context * slots} -np {slots} || failed load "$?"'
     )
     return {
         "name": name, "imageName": IMAGE, "cloudType": cloud,
@@ -73,26 +78,6 @@ def terminate(api, pod_id):
     raise RuntimeError(f"Could not confirm termination of RunPod pod {pod_id}")
 
 
-def wait_ready(api, pod_id, endpoint, headers, deadline):
-    last_status = None
-    while time.monotonic() < deadline:
-        info = api.get(f"{PODS}/{pod_id}", params={"includeMachine": "true"}, timeout=20)
-        if info.ok and info.json().get("desiredStatus") in ("EXITED", "TERMINATED", "STOPPED"):
-            raise RuntimeError(f"Pod exited during startup: {info.json()['desiredStatus']}")
-        try:
-            r = requests.get(endpoint + "/v1/models", headers=headers, timeout=10)
-            if r.ok and MODEL in [m["id"] for m in r.json()["data"]]:
-                return info.json() if info.ok else {}
-            status = r.status_code
-        except requests.RequestException:
-            status = "unreachable"
-        if status != last_status:
-            print(f"Waiting for model on {pod_id} (proxy {status})", flush=True)
-            last_status = status
-        time.sleep(10)
-    raise TimeoutError("The GGUF server did not become ready in time")
-
-
 def main(private_dir):
     p = argparse.ArgumentParser(description=__doc__)
     movies = p.add_mutually_exclusive_group()
@@ -117,6 +102,8 @@ def main(private_dir):
                    help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="SECURE")
     p.add_argument("--timeout-mins", type=int, default=80)
+    p.add_argument("--startup-timeout-mins", type=int, default=12,
+                   help="Maximum minutes to bring up the model, within the overall run deadline")
     args = p.parse_args()
     plan = None
     if args.human_guidance:
@@ -169,7 +156,7 @@ def main(private_dir):
         args.limit = 1
     if args.titles is None:
         args.titles = PIPELINE / "humor_sample_titles.csv"
-    if args.limit < 1 or args.timeout_mins < 1 or not args.titles.is_file():
+    if min(args.limit, args.timeout_mins, args.startup_timeout_mins) < 1 or not args.titles.is_file():
         p.error("Use an existing titles CSV, a positive limit and a positive timeout")
     if not os.getenv("RUNPOD_API_KEY"):
         p.error("RUNPOD_API_KEY is required")
@@ -195,6 +182,7 @@ def main(private_dir):
         "started_at": utc_now(), "titles_file": args.titles.name, "limit": args.limit,
         "temperature": 0.7, "seed": 42,
         "reasoning_budget": reasoning_budget, "context": context,
+        "startup_timeout_mins": min(args.startup_timeout_mins, args.timeout_mins), "startup": {},
     }
     meta.update(profile="humor-first-codeagent", source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 word_bank_url=BANK_URL, preflight=controls, suggestion_cutoff=0.6,
@@ -233,12 +221,14 @@ def main(private_dir):
         save()
         print(f"Created pod {pod_id} at ${meta['cost_per_hour']}/hr", flush=True)
         endpoint = f"https://{pod_id}-8080.proxy.runpod.net"
-        info = wait_ready(api, pod_id, endpoint, {"Authorization": "Bearer " + server_key}, deadline)
+        startup_deadline = min(deadline, start + args.startup_timeout_mins * 60)
+        info = wait_ready(api, pod_id, endpoint, {"Authorization": "Bearer " + server_key},
+                          startup_deadline, meta["startup"])
         meta.update(ready_at=utc_now(), gpu=(info.get("machine") or {}).get("gpuTypeId"))
         save()
         env = {**os.environ, "LLAMA_API_KEY": server_key}
-        for name in ("RUNPOD_API_KEY", "CHUCKLES_2025_BANK_GZ", "CHUCK2025_READ_TOKEN"):
-            env.pop(name, None)
+        for secret_name in ("RUNPOD_API_KEY", "CHUCKLES_2025_BANK_GZ", "CHUCK2025_READ_TOKEN"):
+            env.pop(secret_name, None)
         generator = [str(PIPELINE / "generate_march.py"), "--word-bank", str(source)]
         if args.example_notebook:
             generator.extend(["--example-notebook", str(args.example_notebook)])

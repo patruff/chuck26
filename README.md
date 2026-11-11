@@ -21,6 +21,7 @@ Adapters are versioned by GitHub run in the [private adapter repository](https:/
 
 - [Generate with an edited audience prompt or RunPod](https://github.com/patruff/chuck26/actions/workflows/human-guidance.yml). The prompt default also applies to hosted inference. Its model and weight revisions are [pinned in the repo](config/model.json).
 - [Generate or resume a RunPod batch](https://github.com/patruff/chuck26/actions/workflows/film-review-batch.yml). Completed pairs are archived for the page.
+- RunPod allows 12 minutes for the model to become ready. The Actions log reports GPU detection, weight download, checksum verification and server loading as the pod reports them. For a single run, download `runpod-diagnostics` for the last startup state, elapsed time and teardown confirmation. Bulk runs store the same `run.json` in the shard artifact.
 - [Refresh the review page](https://github.com/patruff/chuck26/actions/workflows/review-pages.yml), optionally supplying a specific completed inference run.
 - Historical recipient-encrypted comparisons still open with their original key through [the local review tool](scripts/review_cycle.py). The [local Flask reviewer](scripts/review_films.py) also remains available for offline files.
 
