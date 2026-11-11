@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -44,14 +46,14 @@ def test_timeout_even_when_pod_desired_status_stays_running(monkeypatch, clock):
 def test_boot_failure_survives_teardown_without_leaking_raw_logs(monkeypatch, clock):
     api = api_with_events("docker run /bin/sh -c 'stage cuda; secret-value'",
                           "CHUCKLES_BOOT cuda", "CHUCKLES_BOOT download",
-                          "CHUCKLES_DOWNLOAD http=403 bytes=0", "CHUCKLES_BOOT failed download 22")
+                          "CHUCKLES_RANGE_ERROR 2 403 22", "CHUCKLES_BOOT failed download 22")
     proxy = Mock()
     monkeypatch.setattr(boot.requests, "get", proxy)
     state = {}
     with pytest.raises(RuntimeError, match=r"download failed \(exit 22\)") as error:
         boot.wait_ready(api, "pod", "https://proxy", {}, 720, state)
     assert "secret-value" not in str(error.value)
-    assert state["transfer"] == "HTTP 403, 0 bytes" and clock[0] == 0
+    assert state["range_error"] == "part 2, HTTP 403, exit 22" and clock[0] == 0
     proxy.assert_not_called()
 
 
@@ -76,7 +78,41 @@ def test_transient_api_and_proxy_failures_then_exact_model(monkeypatch, clock):
 def test_shell_reports_a_failed_download_before_checksum(tmp_path):
     command = pod_config("n", "fixture", "g", "SECURE", 100, 1024)["dockerStartCmd"][0]
     command = command.replace("/app/llama-server", "fake_server").replace("/tmp/devices", str(tmp_path / "devices"))
+    command = command.replace("/tmp/chuckles-download.sh", str(tmp_path / "download.sh"))
     stub = "fake_server() { echo CUDA0:; }; curl() { return 22; }; "
     r = subprocess.run(["sh", "-c", stub + command], capture_output=True, text=True)
     assert r.returncode == 22
     assert "CHUCKLES_BOOT failed download 22" in r.stdout and "CHUCKLES_BOOT checksum" not in r.stdout
+
+
+@pytest.mark.parametrize("honor_range", [True, False])
+def test_pinned_ranges_reassemble_exact_bytes_or_reject_full_response(tmp_path, honor_range):
+    model = bytes(range(251)) * 31
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            first, last = map(int, self.headers["Range"].removeprefix("bytes=").split("-"))
+            body = model[first:last+1] if honor_range else model
+            self.send_response(206 if honor_range else 200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *args):
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            cmd = (Path(boot.__file__).with_name("runpod_download.sh")).read_text()
+            cmd += '\ndownload_weights "$1" "$2" "$3"'
+            out = tmp_path / "model"
+            url = f"http://127.0.0.1:{server.server_port}/weights?v=1"
+            run = subprocess.run(["sh", "-c", cmd, "test", url, str(len(model)), str(out)],
+                                 capture_output=True, text=True, timeout=15)
+        finally:
+            server.shutdown()
+            thread.join()
+    if honor_range:
+        assert run.returncode == 0 and out.read_bytes() == model
+    else:
+        assert run.returncode and not out.exists()

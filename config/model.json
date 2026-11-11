@@ -2,6 +2,7 @@
   "repository": "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
   "revision": "ab8d7bd81d03117501e4da60cccdff4c80f0eea0",
   "file": "RVN-Q4_K_M-multilingual.gguf",
+  "size_bytes": 16547400224,
   "sha256": "9ed40ccc8b8432f38b9a85d0ca67928167f5719e8c10bd299e56d34facaf6e61",
   "llama_cpp": "7d7f0287530bc8981690f361d8c1627dbae1c99a",
   "runpod_image": "ghcr.io/ggml-org/llama.cpp@sha256:859efa314dc34f1843a38ff28a4818aeac51a4cce125bdea4d2678aceba95469"

@@ -2,6 +2,7 @@
 """Run the Qwen3.8 27B GGUF on one ephemeral RunPod GPU and save Chuckles results."""
 
 import argparse
+import base64
 import csv
 from datetime import datetime, timezone
 import hashlib
@@ -32,15 +33,16 @@ def utc_now():
 
 def pod_config(name, server_key, gpu, cloud, reasoning_budget, context, slots=1):
     url = f"https://huggingface.co/{MODEL}/resolve/{REVISION}/{FILENAME}"
+    # Keep the API's shell command one line even when the download helper has comments.
+    download_script = base64.b64encode((PIPELINE / "runpod_download.sh").read_bytes()).decode("ascii")
     boot = (
-        'set -eu; stage() { echo "CHUCKLES_BOOT $1"; }; '
+        f"set -eu; echo '{download_script}' | base64 -d > /tmp/chuckles-download.sh; . /tmp/chuckles-download.sh; "
+        'stage() { echo "CHUCKLES_BOOT $1"; }; '
         'failed() { echo "CHUCKLES_BOOT failed $1 $2"; exit "$2"; }; '
         'stage cuda; /app/llama-server --list-devices > /tmp/devices 2>&1 || failed cuda "$?"; '
         'cat /tmp/devices; grep -q "CUDA0:" /tmp/devices || failed cuda "$?"; '
-        'stage download; curl -fsSL --connect-timeout 15 --speed-limit 16384 --speed-time 45 '
-        '--max-time 480 --retry 2 --retry-max-time 480 '
-        "-w 'CHUCKLES_DOWNLOAD http=%{http_code} bytes=%{size_download}\\n' "
-        f'-o /tmp/model.gguf "{url}?download=true&boot=$(date +%s)" || failed download "$?"; '
+        f'stage download; download_weights "{url}?download=true&boot=$(date +%s)" '
+        f'{MODEL_CONFIG["size_bytes"]} /tmp/model.gguf || failed download "$?"; '
         f"stage checksum; echo '{SHA256}  /tmp/model.gguf' | sha256sum -c - || failed checksum \"$?\"; "
         f"stage load; /app/llama-server -m /tmp/model.gguf --alias {MODEL} "
         "--host 0.0.0.0 --port 8080 --jinja --reasoning-format deepseek "
@@ -102,7 +104,7 @@ def main(private_dir):
                    help="GPU type or comma-separated preference order (24 GB VRAM minimum)")
     p.add_argument("--cloud", choices=["COMMUNITY", "SECURE"], default="SECURE")
     p.add_argument("--timeout-mins", type=int, default=80)
-    p.add_argument("--startup-timeout-mins", type=int, default=12,
+    p.add_argument("--startup-timeout-mins", type=int, default=18,
                    help="Maximum minutes to bring up the model, within the overall run deadline")
     args = p.parse_args()
     plan = None

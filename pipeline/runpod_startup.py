@@ -22,9 +22,13 @@ def startup_event(source, line):
             return "error", f"{stage} failed (exit {code})"
         if not failed and not code:
             return "stage", stage
-    transfer = re.search(r"(?:^|\s)CHUCKLES_DOWNLOAD http=(\d{3}) bytes=(\d+)$", line)
-    if transfer and source == "container":
-        return "transfer", f"HTTP {transfer[1]}, {transfer[2]} bytes"
+    if source == "container":
+        progress = re.search(r"(?:^|\s)CHUCKLES_BYTES (\d+)$", line)
+        if progress:
+            return "downloaded_bytes", int(progress[1])
+        bad_range = re.search(r"(?:^|\s)CHUCKLES_RANGE_ERROR (\d) (\d{3}) (\d{1,3})$", line)
+        if bad_range:
+            return "range_error", f"part {bad_range[1]}, HTTP {bad_range[2]}, exit {bad_range[3]}"
     lower = line.lower()
     for needle, reason in (
         ("no space left on device", "host or container disk full"),
@@ -78,6 +82,10 @@ def read_startup_logs(api, pod_id, state, deadline):
 def wait_ready(api, pod_id, endpoint, headers, deadline, state):
     start = time.monotonic()
     next_logs = next_report = start
+    # Image pulls sometimes take most of a cold start. Give a confirmed container
+    # its download/load window, within the absolute startup and workflow limits.
+    host_deadline = min(deadline, start + 12 * 60)
+    container_deadline = None
     previous = None
     info = {}
     while (remaining := deadline - time.monotonic()) > 0:
@@ -95,7 +103,12 @@ def wait_ready(api, pod_id, endpoint, headers, deadline, state):
         if now >= next_logs or stopped:
             read_startup_logs(api, pod_id, state, deadline)
             next_logs = now + 20
-        if state.get("error") or stopped:
+        if state.get("error") or state.get("range_error") or stopped:
+            break
+        if container_deadline is None and (state.get("stage") or state.get("platform") == "container start"):
+            container_deadline = min(deadline, time.monotonic() + 8 * 60)
+        phase_deadline = container_deadline or host_deadline
+        if time.monotonic() >= phase_deadline:
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -116,6 +129,6 @@ def wait_ready(api, pod_id, endpoint, headers, deadline, state):
             next_report = now + 60
         time.sleep(max(0, min(8, deadline - time.monotonic())))
     detail = json.dumps(state)
-    if state.get("error") or state.get("desired_status") in ("EXITED", "TERMINATED", "STOPPED"):
+    if state.get("error") or state.get("range_error") or state.get("desired_status") in ("EXITED", "TERMINATED", "STOPPED"):
         raise RuntimeError(f"RunPod startup failed on {pod_id}: {detail}")
     raise TimeoutError(f"RunPod model startup deadline reached on {pod_id}: {detail}")
