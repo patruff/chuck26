@@ -81,6 +81,58 @@ def terminate(api, pod_id):
     raise RuntimeError(f"Could not confirm termination of RunPod pod {pod_id}")
 
 
+def find_named_pod(api, name, timeout=30):
+    listed = api.get(PODS, timeout=timeout)
+    listed.raise_for_status()
+    return next((pod for pod in listed.json() if pod.get("name") == name), None)
+
+
+def capacity_rejection(response):
+    if response.status_code not in (409, 500, 503):
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    message = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(message, str):
+        return False
+    lines = [s.strip().lower().removeprefix("create pod: ").rstrip(".")
+             for s in message.splitlines() if s.strip()]
+    return bool(lines) and all(s == "there are no instances currently available" for s in lines)
+
+
+def allocate_pod(api, config, deadline, allocation):
+    """Only repeat an explicit capacity rejection, using the original pod name and GPU list."""
+    delay = 15
+    last_request = None
+    allocation.update(attempts=0, capacity_rejections=0)
+    while (remaining := deadline - time.monotonic()) > 0:
+        if last_request is not None:
+            existing = find_named_pod(api, config["name"], timeout=min(20, remaining))
+            if existing:
+                return existing, last_request
+        last_request = time.monotonic()
+        if last_request >= deadline:
+            break
+        allocation["attempts"] += 1
+        response = api.post(PODS, json=config, timeout=min(75, deadline - last_request))
+        if response.ok:
+            return response.json(), last_request
+        if not capacity_rejection(response):
+            detail = response.text.replace(config["env"]["LLAMA_API_KEY"], "[redacted]")[:500]
+            raise RuntimeError(f"RunPod creation returned {response.status_code}: {detail}")
+        allocation["capacity_rejections"] += 1
+        remaining = deadline - time.monotonic()
+        if remaining <= delay:
+            break
+        print(f"RunPod has no available GPU (attempt {allocation['attempts']}). "
+              f"Checking again in {delay}s.", flush=True)
+        time.sleep(delay)
+        delay = min(delay * 2, 60)
+    raise TimeoutError(f"There are no instances currently available after {allocation['attempts']} allocation attempts")
+
+
 def main(private_dir):
     p = argparse.ArgumentParser(description=__doc__)
     movies = p.add_mutually_exclusive_group()
@@ -193,7 +245,7 @@ def main(private_dir):
         "started_at": utc_now(), "titles_file": args.titles.name, "limit": args.limit,
         "temperature": 0.7, "seed": 42,
         "reasoning_budget": reasoning_budget, "context": context,
-        "startup_timeout_mins": min(args.startup_timeout_mins, args.timeout_mins), "startup": {},
+        "startup_timeout_mins": min(args.startup_timeout_mins, args.timeout_mins), "startup": {}, "allocation": {},
     }
     meta.update(profile="humor-first-codeagent", source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 word_bank_url=BANK_URL, preflight=controls, suggestion_cutoff=0.6,
@@ -218,21 +270,17 @@ def main(private_dir):
     start = time.monotonic()
     deadline = start + args.timeout_mins * 60
     pod_id = None
+    rental_start = None
     save()
     try:
         config = pod_config(name, server_key, args.gpu, args.cloud, reasoning_budget, context, args.slots)
-        response = api.post(PODS, json=config, timeout=75)
-        if not response.ok:
-            # API errors can echo the request, which contains the temporary server credential.
-            raise RuntimeError(f"RunPod creation returned {response.status_code}: "
-                               + response.text.replace(server_key, "[redacted]")[:500])
-        pod = response.json()
+        pod, rental_start = allocate_pod(api, config, min(deadline, start + 600), meta["allocation"])
         pod_id = pod["id"]
-        meta.update(pod_id=pod_id, cost_per_hour=pod.get("costPerHr"))
+        meta.update(pod_id=pod_id, cost_per_hour=pod.get("costPerHr"), allocated_at=utc_now())
         save()
         print(f"Created pod {pod_id} at ${meta['cost_per_hour']}/hr", flush=True)
         endpoint = f"https://{pod_id}-8080.proxy.runpod.net"
-        startup_deadline = min(deadline, start + args.startup_timeout_mins * 60)
+        startup_deadline = min(deadline, time.monotonic() + args.startup_timeout_mins * 60)
         info = wait_ready(api, pod_id, endpoint, {"Authorization": "Bearer " + server_key},
                           startup_deadline, meta["startup"])
         meta.update(ready_at=utc_now(), gpu=(info.get("machine") or {}).get("gpuTypeId"))
@@ -265,9 +313,8 @@ def main(private_dir):
     finally:
         # A lost creation response can still allocate a pod. Reconcile only this unique name.
         if not pod_id:
-            listed = api.get(PODS, timeout=30)
-            listed.raise_for_status()
-            pod_id = next((d["id"] for d in listed.json() if d.get("name") == name), None)
+            existing = find_named_pod(api, name)
+            pod_id = existing["id"] if existing else None
         if pod_id:
             meta["pod_id"] = pod_id
             save()
@@ -276,8 +323,9 @@ def main(private_dir):
             print(f"Confirmed teardown of {pod_id}", flush=True)
         meta["ended_at"] = utc_now()
         meta["elapsed_seconds"] = round(time.monotonic() - start, 2)
-        if meta.get("cost_per_hour") is not None:
-            meta["estimated_compute_usd"] = round(float(meta["cost_per_hour"]) * meta["elapsed_seconds"] / 3600, 4)
+        if rental_start is not None and meta.get("cost_per_hour") is not None:
+            meta["rental_seconds"] = round(time.monotonic() - rental_start, 2)
+            meta["estimated_compute_usd"] = round(float(meta["cost_per_hour"]) * meta["rental_seconds"] / 3600, 4)
         save()
 
 

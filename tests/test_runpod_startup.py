@@ -11,7 +11,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipeline"))
 import runpod_startup as boot
-from run_gguf_test import pod_config
+from run_gguf_test import allocate_pod, pod_config
 
 
 @pytest.fixture
@@ -20,6 +20,57 @@ def clock(monkeypatch):
     monkeypatch.setattr(boot.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(boot.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
     return now
+
+
+def unavailable():
+    return Mock(ok=False, status_code=500, **{"json.return_value": {
+        "error": "create pod: There are no instances currently available\nThere are no instances currently available",
+        "status": 500,
+    }})
+
+
+def test_capacity_rejections_retry_same_rental_and_exclude_wait_from_rental_time(clock):
+    config = pod_config("batch", "fixture", "NVIDIA RTX A6000,NVIDIA A40", "SECURE", 1536, 16384)
+    api = Mock()
+    api.post.side_effect = [unavailable(), unavailable(), Mock(ok=True, **{"json.return_value": {"id": "ready"}})]
+    api.get.return_value.json.return_value = [{"name": "another-batch", "id": "other"}]
+    stats = {}
+    pod, rental_start = allocate_pod(api, config, 600, stats)
+    assert pod == {"id": "ready"} and rental_start == 45
+    assert stats == {"attempts": 3, "capacity_rejections": 2}
+    assert all(call.kwargs["json"] == config for call in api.post.call_args_list)
+    assert api.get.call_count == 2
+
+
+def test_capacity_reconciliation_picks_up_own_pod_without_reposting(clock):
+    api = Mock()
+    api.post.return_value = unavailable()
+    existing = {"name": "batch", "id": "already-rented"}
+    api.get.return_value.json.return_value = [existing]
+    assert allocate_pod(api, {"name": "batch"}, 600, {}) == (existing, 0)
+    api.post.assert_called_once()
+
+
+def test_allocation_wait_is_bounded_and_other_errors_are_not_retried(clock):
+    api = Mock()
+    api.post.return_value = unavailable()
+    api.get.return_value.json.return_value = []
+    with pytest.raises(TimeoutError, match="3 allocation attempts"):
+        allocate_pod(api, {"name": "batch"}, 60, {})
+    assert clock[0] == 45
+    api.reset_mock()
+    denied = Mock(ok=False, status_code=500, text="account balance too low")
+    denied.json.return_value = {"error": denied.text}
+    api.post.return_value = denied
+    with pytest.raises(RuntimeError, match="balance too low"):
+        allocate_pod(api, {"name": "batch", "env": {"LLAMA_API_KEY": "fixture"}}, 120, {})
+    api.post.assert_called_once()
+    api.get.assert_not_called()
+    api.reset_mock()
+    api.post.side_effect = requests.Timeout()
+    with pytest.raises(requests.Timeout):
+        allocate_pod(api, {"name": "batch"}, 120, {})
+    api.post.assert_called_once()
 
 
 def api_with_events(*lines):
